@@ -192,45 +192,14 @@ void hbdia_cpu_coo_spmv_partial(
 // Host function for hybrid GPU+CPU HBDIA SpMV
 template<typename T>
 bool hbdiaSpMV(const HBDIA<T>& matrix, const HBDIAVector<T>& inputVector, HBDIAVector<T>& outputVector) {
-    // Check if HBDIA format is available
-    if (!matrix.isHBDIAFormat()) {
-        std::cerr << "Error: Matrix must be converted to HBDIA format before SpMV" << std::endl;
-        return false;
-    }
-    
-    // Check if GPU data is prepared
-    if (!matrix.getHBDIADataDevice()) {
-        std::cerr << matrix.getRank() << ": Error: GPU data not prepared. Call prepareForGPU() first" << std::endl;
-        return false;
-    }
-    
     // Get matrix dimensions and block information
     int numBlocks = static_cast<int>(matrix.getOffsetsPerBlock().size());
     int numRows = matrix.getNumRows();
     int blockWidth = matrix.getBlockWidth();
     bool isPartialMatrix = matrix.isPartialMatrix();
-    
-    // Ensure output vector has unified memory and is the right size
-    if (!outputVector.getUnifiedDataPtr()) {
-        std::cerr << "Error: Output vector must have unified memory allocated" << std::endl;
-        return false;
-    }
-    
-    if (static_cast<int>(outputVector.getLocalSize()) != numRows) {
-        std::cerr << "Error: Output vector size mismatch. Expected: " << numRows 
-                  << ", got: " << outputVector.getLocalSize() << std::endl;
-        return false;
-    }
-    
+
     // Get pointer to the local section of the output vector in unified memory
     T* outputPtr = outputVector.getLocalDataPtr();
-    if (!outputPtr) {
-        std::cerr << "Error: Cannot get local data pointer from output vector" << std::endl;
-        return false;
-    }
-    
-    // Initialize output to zero
-    cudaMemset(outputPtr, 0, numRows * sizeof(T));
     
     // Get CPU fallback data
     const auto& cpuRowIndices = matrix.getCpuRowIndices();
@@ -238,99 +207,44 @@ bool hbdiaSpMV(const HBDIA<T>& matrix, const HBDIAVector<T>& inputVector, HBDIAV
     const auto& cpuValues = matrix.getCpuValues();
     
     // Launch GPU kernel configuration
-    int threadsPerBlock = 256;
+    int threadsPerBlock = THREADS_PER_BLOCK_SPMV;
     int numBlocks_grid = (numRows + threadsPerBlock - 1) / threadsPerBlock;
     
-    std::cout << "Starting " << (isPartialMatrix ? "distributed" : "single GPU") 
-              << " hybrid SpMV: GPU (" << (matrix.getHBDIAData().size()) << " elements) + CPU (" 
-              << cpuValues.size() << " elements, single-threaded)" << std::endl;
-    
-    // Record total start time
-    auto totalStart = std::chrono::high_resolution_clock::now();
-    
-    // Shared variables for timing results
-    std::atomic<double> gpuTime{0.0};
-    std::atomic<double> cpuTime{0.0};
     
     // GPU thread - launches kernel and measures its execution time
-    std::thread gpuThread([&]() {
-        auto gpuStart = std::chrono::high_resolution_clock::now();
-        
-        // Launch GPU kernel (blocking in this thread)
-        hbdia_spmv_kernel<<<numBlocks_grid, threadsPerBlock>>>(
-            matrix.getHBDIADataDevice(),           // Matrix data on GPU
-            matrix.getFlattenedOffsetsDevice(),    // Flattened offsets
-            matrix.getBlockSizesDevice(),          // Block sizes
-            matrix.getBlockStartIndicesDevice(),   // Block start indices
-            inputVector.getUnifiedDataPtr(),       // Input vector (unified memory)
-            numBlocks,                             // Number of blocks
-            blockWidth,                            // Block width
-            numRows,                               // Number of rows
-            outputPtr,                             // Output vector (unified memory)
-            isPartialMatrix,                       // Flag for partial matrix
-            matrix.getFlattenedVectorOffsetsDevice() // Vector offsets (null for non-partial)
-        );
-        
-        // Wait for GPU to complete
-        cudaDeviceSynchronize();
-        auto gpuEnd = std::chrono::high_resolution_clock::now();
-        
-        gpuTime.store(std::chrono::duration<double, std::milli>(gpuEnd - gpuStart).count());
-    });
+    // Launch GPU kernel (blocking in this thread)
+    hbdia_spmv_kernel<<<numBlocks_grid, threadsPerBlock>>>(
+        matrix.getHBDIADataDevice(),           // Matrix data on GPU
+        matrix.getFlattenedOffsetsDevice(),    // Flattened offsets
+        matrix.getBlockSizesDevice(),          // Block sizes
+        matrix.getBlockStartIndicesDevice(),   // Block start indices
+        inputVector.getUnifiedDataPtr(),       // Input vector (unified memory)
+        numBlocks,                             // Number of blocks
+        blockWidth,                            // Block width
+        numRows,                               // Number of rows
+        outputPtr,                             // Output vector (unified memory)
+        isPartialMatrix,                       // Flag for partial matrix
+        matrix.getFlattenedVectorOffsetsDevice() // Vector offsets (null for non-partial)
+    );
     
     // CPU processing with separate accumulation buffer
     std::vector<T> cpuResults;
     std::thread cpuThread;
     bool hasCpuWork = !cpuValues.empty();
-    
-    if (hasCpuWork) {
-        // CPU thread - processes COO entries and measures its execution time
-        cpuThread = std::thread([&]() {
-            auto cpuStart = std::chrono::high_resolution_clock::now();
             
-            // For distributed SpMV, CPU also needs to use the unified memory for column access
-            const T* cpuInputPtr = inputVector.getUnifiedDataPtr();
-            
-            if (isPartialMatrix) {
-                // For partial matrices, use the specialized function that handles global column indices
-                hbdia_cpu_coo_spmv_partial<T>(cpuRowIndices, cpuColIndices, cpuValues, cpuInputPtr, numRows, cpuResults, matrix);
-            } else {
-                // For non-partial matrices, use the original function
-                hbdia_cpu_coo_spmv<T>(cpuRowIndices, cpuColIndices, cpuValues, cpuInputPtr, numRows, cpuResults);
-            }
-            
-            auto cpuEnd = std::chrono::high_resolution_clock::now();
-            cpuTime.store(std::chrono::duration<double, std::milli>(cpuEnd - cpuStart).count());
-        });
-    }
+    // For distributed SpMV, CPU also needs to use the unified memory for column access
+    const T* cpuInputPtr = inputVector.getUnifiedDataPtr();
     
-    // Wait for both threads to complete
-    gpuThread.join();
-    if (cpuThread.joinable()) {
-        cpuThread.join();
-    }
-    
-    // Record total end time
-    auto totalEnd = std::chrono::high_resolution_clock::now();
-    auto totalTime = std::chrono::duration<double, std::milli>(totalEnd - totalStart).count();
-    
-    // Check for kernel launch errors (after GPU thread completes)
-    cudaError_t kernelError = cudaGetLastError();
-    if (kernelError != cudaSuccess) {
-        std::cerr << "CUDA kernel launch error: " << cudaGetErrorString(kernelError) << std::endl;
-        return false;
-    }
-    
-    // Report timing results
-    std::cout << "GPU processing time: " << gpuTime.load() << " ms" << std::endl;
-    
-    if (hasCpuWork) {
-        std::cout << "CPU processing time: " << cpuTime.load() << " ms" << std::endl;
+    if (isPartialMatrix) {
+        // For partial matrices, use the specialized function that handles global column indices
+        hbdia_cpu_coo_spmv_partial<T>(cpuRowIndices, cpuColIndices, cpuValues, cpuInputPtr, numRows, cpuResults, matrix);
     } else {
-        std::cout << "CPU processing time: 0.00 ms (no CPU work)" << std::endl;
+        // For non-partial matrices, use the original function
+        hbdia_cpu_coo_spmv<T>(cpuRowIndices, cpuColIndices, cpuValues, cpuInputPtr, numRows, cpuResults);
     }
     
-    std::cout << "Total hybrid time: " << totalTime << " ms" << std::endl;
+    // Wait for GPU to complete
+    cudaDeviceSynchronize();
     
     // Combine CPU results with GPU results if CPU processing occurred
     if (hasCpuWork) {
@@ -341,8 +255,7 @@ bool hbdiaSpMV(const HBDIA<T>& matrix, const HBDIAVector<T>& inputVector, HBDIAV
             }
         }
     }
-    
-    std::cout << "Hybrid SpMV completed successfully" << std::endl;
+
     return true;
 }
 
