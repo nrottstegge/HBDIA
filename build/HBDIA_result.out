@@ -1,0 +1,125 @@
+Started: 23:03:06
+
++---------------------------------+
+| Running run_HBDIA_test          |
++---------------------------------+
+
+=== HBDIA vs cuSPARSE Comparison Test ===
+DIA format is not available
+HBDIA format is not available
+Created 3D 128x128x128 stencil matrix:
+  Matrix size: 2097152x2097152
+  Non-zeros: 55742968
+=========================================
+     UNIFIED HBDIA MATRIX DEBUG INFO     
+=========================================
+Matrix size: 2097152 x 2097152 with 55742968 non-zeros
+Storage formats: COO
+
+========== MATRIX FORMATS ==========
+
+--- COO Format ---
+
+COO Format Storage:
+Number of entries: 55742968
+Storage vectors:
+  rowIndices: 55742968 elements
+  colIndices: 55742968 elements
+  values: 55742968 elements
+
+First 10 entries:
+Row	Col	Value
+---	---	-----
+0	0	26.000000
+0	1	-1.000000
+0	128	-1.000000
+0	129	-0.100000
+0	16384	-1.000000
+0	16385	-0.100000
+0	16512	-0.100000
+0	16513	-0.010000
+1	0	-1.000000
+1	1	26.000000
+... and 55742958 more entries
+
+
+========== DATA RANGES & OWNERSHIP ==========
+=== PARTIAL MATRIX DATA RANGES ===
+Matrix is not configured as a partial matrix
+
+========== MATRIX VISUALIZATION ==========
+
+Dense Matrix Visualization (ASCII art):
+Matrix size: 2097152 x 2097152
+Matrix too large for ASCII art display (max 100x100). Showing structure only.
+Non-zero density: inf%
+
+=========================================
+       END HBDIA MATRIX DEBUG INFO       
+=========================================
+Matrix size: 2097152x2097152
+Non-zeros: 55742968
+blockWidth: 32, threshold: 1 COOisUnique: 0
+HBDIA conversion complete:
+  GPU storage: 55742968 entries
+  CPU fallback: 0 entries
+  Active blocks: 65536/65536
+Vector must have unified memory allocated
+HBDIA SpMV iteration 1 took 	1.193660 ms
+HBDIA SpMV iteration 2 took 	1.076767 ms
+HBDIA SpMV iteration 3 took 	1.095551 ms
+HBDIA SpMV iteration 4 took 	0.959587 ms
+HBDIA SpMV iteration 5 took 	0.987234 ms
+HBDIA SpMV iteration 6 took 	1.165756 ms
+HBDIA SpMV iteration 7 took 	1.029152 ms
+HBDIA SpMV iteration 8 took 	1.058752 ms
+HBDIA SpMV iteration 9 took 	1.012193 ms
+HBDIA SpMV iteration 10 took 	1.284697 ms
+HBDIA SpMV iteration 11 took 	1.029792 ms
+HBDIA SpMV iteration 12 took 	1.131838 ms
+HBDIA SpMV iteration 13 took 	1.076959 ms
+HBDIA SpMV iteration 14 took 	1.151517 ms
+HBDIA SpMV iteration 15 took 	0.978018 ms
+HBDIA SpMV iteration 16 took 	1.047136 ms
+HBDIA SpMV iteration 17 took 	0.970435 ms
+HBDIA SpMV iteration 18 took 	1.175836 ms
+HBDIA SpMV iteration 19 took 	0.958626 ms
+HBDIA SpMV iteration 20 took 	0.913124 ms
+cuSPARSE SpMV iteration 1 took 	11.128268 ms
+cuSPARSE SpMV iteration 2 took 	0.403156 ms
+cuSPARSE SpMV iteration 3 took 	0.391093 ms
+cuSPARSE SpMV iteration 4 took 	0.388884 ms
+cuSPARSE SpMV iteration 5 took 	0.390772 ms
+cuSPARSE SpMV iteration 6 took 	0.389109 ms
+cuSPARSE SpMV iteration 7 took 	0.389684 ms
+cuSPARSE SpMV iteration 8 took 	0.385684 ms
+cuSPARSE SpMV iteration 9 took 	0.385972 ms
+cuSPARSE SpMV iteration 10 took 	0.385397 ms
+cuSPARSE SpMV iteration 11 took 	0.387700 ms
+cuSPARSE SpMV iteration 12 took 	0.383508 ms
+cuSPARSE SpMV iteration 13 took 	0.382836 ms
+cuSPARSE SpMV iteration 14 took 	0.386036 ms
+cuSPARSE SpMV iteration 15 took 	0.383445 ms
+cuSPARSE SpMV iteration 16 took 	0.381557 ms
+cuSPARSE SpMV iteration 17 took 	0.382772 ms
+cuSPARSE SpMV iteration 18 took 	0.381012 ms
+cuSPARSE SpMV iteration 19 took 	0.378836 ms
+cuSPARSE SpMV iteration 20 took 	0.382708 ms
+
+=== Performance Results ===
+HBDIA time:            0.913124 ms
+cuSPARSE setup time:   26.093892 ms
+cuSPARSE exec time:    0.000032 ms
+cuSPARSE total time:   26.093924 ms
+Speedup vs cuSPARSE exec: 0.000035x
+Speedup vs cuSPARSE total: 28.576539x
+
+=== Accuracy Results ===
+Max error:     0.000000
+Error count:   0/2097152
+HBDIA sum:     41313963585982.453125
+cuSPARSE sum:  41313963585982.453125
+Relative error: 0.000000
+✅ ACCURACY TEST PASSED!
+
+Finished: 23:03:09

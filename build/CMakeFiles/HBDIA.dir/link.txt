@@ -1,0 +1,2 @@
+/usr/bin/ar qc libHBDIA.a CMakeFiles/HBDIA.dir/src/Format/HBDIA.cpp.o CMakeFiles/HBDIA.dir/src/Format/HBDIAPrinter.cpp.o CMakeFiles/HBDIA.dir/src/Format/HBDIAVector.cpp.o CMakeFiles/HBDIA.dir/src/DataExchange/BasicExtractor.cpp.o CMakeFiles/HBDIA.dir/src/DataExchange/BasicDistributor.cpp.o CMakeFiles/HBDIA.dir/src/DataExchange/MPICommunicator.cpp.o CMakeFiles/HBDIA.dir/src/Operations/HBDIASpMV.cu.o
+/usr/bin/ranlib libHBDIA.a
