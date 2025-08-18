@@ -19,7 +19,19 @@ void hbdia_cpu_coo_spmv(
     const std::vector<T>& cpuValues,
     const T* inputVector,
     int numRows,
-    std::vector<T>& cpuResults
+    T* cpuResults  // CPU results buffer from HBDIAVector
+);
+
+// CPU helper function for processing COO fallback entries in distributed matrices
+template<typename T>
+void hbdia_cpu_coo_spmv_partial(
+    const std::vector<int>& cpuRowIndices,
+    const std::vector<int>& cpuColIndices,
+    const std::vector<T>& cpuValues,
+    const T* inputVector,
+    int numRows,
+    T* cpuResults,  // CPU results buffer from HBDIAVector
+    const HBDIA<T>& matrix
 );
 
 #endif // HBDIASPMV_CUH

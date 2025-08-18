@@ -1,4 +1,4 @@
-# HBDIA: Heterogenous Block-Diagonal Sparse Matrix Library
+# HBDIA: Heterogenous Blocked Diagonal Sparse Matrix Library
 
 A high-performance sparse matrix library that combines GPU acceleration with CPU fallback for  sparse matrix-vector multiplication (SpMV) on heterogenous architectures.
 
@@ -13,7 +13,7 @@ HBDIA (Hybrid Block-Diagonal) format is a sparse matrix storage scheme that:
 
 **Original Dense Matrix (20×20):**
 ```
-Dense Matrix Visualization (ASCII art):
+Dense Matrix Visualization:
 Matrix size: 20 x 20
         0    1    2    3    4    5    6    7    8    9   10   11   12   13   14   15   16   17   18   19
   0: 5.00 2.00 0.50    .    .    .    .    .    .    .    .    .    .    .    .    .    .    .    .    .
@@ -69,7 +69,7 @@ Block 2 (columns 16-23):
 
 Summary: 3 active blocks out of 3
 
-CPU fallback entries (first 10):
+CPU fallback entries:
 Row     Col     Value
 0       2       0.500000
 2       15      0.300000

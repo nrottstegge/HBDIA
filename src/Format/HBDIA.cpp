@@ -336,8 +336,6 @@ bool HBDIA<T>::loadMTX(const std::string& filename, int numRows, int numCols) {
         std::cout << ", expanded to " << numNonZeros << " total entries";
     }
     std::cout << " into " << numRows << "x" << numCols << " matrix" << std::endl;
-
-    this->convertToDIAFormat();
     
     return originalEntries > 0;
 }
@@ -405,7 +403,7 @@ void HBDIA<T>::convertToDIAFormat(bool COOisUnique) {
     
     // Step 1: Remove duplicates from COO format if not already unique
     if (!COOisUnique) {
-        removeCOODuplicates();
+        //removeCOODuplicates();
     }
     
     // Step 2: Find all unique diagonal offsets using global coordinates when available
@@ -479,6 +477,7 @@ void HBDIA<T>::convertToDIAFormat(bool COOisUnique) {
 
 template <typename T>
 void HBDIA<T>::convertToHBDIAFormat(int blockWidth, int threshold, bool COOisUnique) {
+    std::cout << "blockWidth: " << blockWidth << ", threshold: " << threshold << " COOisUnique: " << COOisUnique << std::endl;
     if (hasHBDIA) {
         std::cout << "Matrix is already in HBDIA format" << std::endl;
         return;
@@ -499,7 +498,7 @@ void HBDIA<T>::convertToHBDIAFormat(int blockWidth, int threshold, bool COOisUni
     
     // Step 1: Remove duplicates from COO format if not already unique
     if (!COOisUnique) {
-        removeCOODuplicates();
+        //removeCOODuplicates();
     }
     
     // Step 2: Calculate maximum number of blocks (use minimum of rows and columns for partial matrices)
@@ -660,6 +659,9 @@ void HBDIA<T>::prepareForGPU() {
             }
         }
         // For non-partial matrices, don't add vector offsets at all
+        if(blockId == offsetsPerBlock.size() - 1) {
+            blockStartIndices.push_back(flattenedOffsets.size()); //last block
+        }
     }
     
     // Allocate GPU device memory and copy data
@@ -1091,6 +1093,97 @@ void HBDIA<T>::analyzeDataRanges() {
     
     // Add the last range
     dataRanges.emplace_back(rangeStart, rangeEnd);
+}
+
+// Method for creating 3D 27-point stencil matrices
+template <typename T>
+void HBDIA<T>::create3DStencil27Point(int nx, int ny, int nz) {
+    // Clear any existing data
+    values.clear();
+    rowIndices.clear();
+    colIndices.clear();
+    
+    // Clear other formats
+    deleteDIAFormat();
+    deleteHBDIAFormat();
+    
+    int totalNodes = nx * ny * nz;
+    
+    // Function to convert 3D coordinates (i,j,k) to linear index
+    auto getIndex = [&](int i, int j, int k) -> int {
+        return k * nx * ny + j * nx + i;
+    };
+    
+    // Reserve space for efficiency (each interior node has 27 neighbors)
+    int estimatedNNZ = totalNodes * 27; // Overestimate
+    rowIndices.reserve(estimatedNNZ);
+    colIndices.reserve(estimatedNNZ);
+    values.reserve(estimatedNNZ);
+    
+    // Generate 27-point stencil for each grid point
+    for (int k = 0; k < nz; k++) {
+        for (int j = 0; j < ny; j++) {
+            for (int i = 0; i < nx; i++) {
+                int centerIdx = getIndex(i, j, k);
+                
+                // Loop through all 27 stencil points (3x3x3 neighborhood)
+                for (int dk = -1; dk <= 1; dk++) {
+                    for (int dj = -1; dj <= 1; dj++) {
+                        for (int di = -1; di <= 1; di++) {
+                            int ni = i + di;  // neighbor i-coordinate
+                            int nj = j + dj;  // neighbor j-coordinate  
+                            int nk = k + dk;  // neighbor k-coordinate
+                            
+                            // Check if neighbor is within bounds
+                            if (ni >= 0 && ni < nx && 
+                                nj >= 0 && nj < ny && 
+                                nk >= 0 && nk < nz) {
+                                
+                                int neighborIdx = getIndex(ni, nj, nk);
+                                
+                                // Add matrix entry
+                                rowIndices.push_back(centerIdx);
+                                colIndices.push_back(neighborIdx);
+                                
+                                // Set stencil weights
+                                if (di == 0 && dj == 0 && dk == 0) {
+                                    // Center point - typically the largest weight
+                                    values.push_back(static_cast<T>(26.0));
+                                } else if ((di != 0 ? 1 : 0) + (dj != 0 ? 1 : 0) + (dk != 0 ? 1 : 0) == 1) {
+                                    // Face neighbors (6 total) - primary connections
+                                    values.push_back(static_cast<T>(-1.0));
+                                } else if ((di != 0 ? 1 : 0) + (dj != 0 ? 1 : 0) + (dk != 0 ? 1 : 0) == 2) {
+                                    // Edge neighbors (12 total) - secondary connections  
+                                    values.push_back(static_cast<T>(-0.1));
+                                } else {
+                                    // Corner neighbors (8 total) - tertiary connections
+                                    values.push_back(static_cast<T>(-0.01));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Set matrix dimensions and metadata
+    numRows = totalNodes;
+    numCols = totalNodes;
+    numNonZeros = static_cast<int>(values.size());
+    
+    // Set format flags
+    hasCOO = true;
+    hasDIA = false;
+    hasHBDIA = false;
+    
+    // Reset partial matrix settings
+    partialMatrix = false;
+    globalRowMapping.clear();
+    
+    std::cout << "Created 3D " << nx << "x" << ny << "x" << nz << " stencil matrix:" << std::endl;
+    std::cout << "  Matrix size: " << numRows << "x" << numCols << std::endl;
+    std::cout << "  Non-zeros: " << numNonZeros << std::endl;
 }
 
 // Explicit template instantiations for common types

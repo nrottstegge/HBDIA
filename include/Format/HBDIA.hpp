@@ -54,6 +54,12 @@ class HBDIA {
         void printDense() const;
         void printDataRanges() const;
         
+        // Static factory method for creating 3D stencil matrices
+        // Creates a 27-point stencil matrix for a 3D grid of size nx x ny x nz
+        // Each grid point connects to all 26 neighbors + itself in a 3x3x3 cube
+        // Uses realistic stencil weights: center=26, faces=-1, edges=-0.1, corners=-0.01
+        void create3DStencil27Point(int nx, int ny, int nz);
+        
         // Format deletion methods
         void deleteCOOFormat();
         void deleteDIAFormat();
@@ -90,6 +96,7 @@ class HBDIA {
         const std::vector<T>& getCpuValues() const { return cpuValues; }
         int getBlockWidth() const { return blockWidth; }
         int getThreshold() const { return threshold; }
+        int getNumBlocks() const { return static_cast<int>(offsetsPerBlock.size()); }
         
         // Getters for GPU-friendly flattened data structures (removed - use managed memory getters instead)
 

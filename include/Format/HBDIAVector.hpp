@@ -19,6 +19,13 @@ class HBDIAPrinter;
 template <typename T>
 class MPICommunicator;
 
+// Enum to specify vector usage pattern for memory optimization
+enum class VectorUsage {
+    INPUT,    // Read-only input vector (uses ReadMostly advice)
+    OUTPUT,   // Output vector that will be written to
+    INOUT     // Vector used for both input and output
+};
+
 template <typename T>
 class HBDIAVector {
     // Friend classes for access to private members
@@ -40,11 +47,21 @@ public:
     T* getLocalDataPtr() const { return unified_local_ptr_; }
     
     // Basic operations
-    size_t getLocalSize() const { return size_local; }
-    size_t getTotalSize() const { return size_recv_left_ + size_local + size_recv_right_; }
+    size_t getLocalSize() const { return size_local_; }
+    size_t getTotalSize() const { return size_recv_left_ + size_local_ + size_recv_right_; }
     
     // Managed memory access (CPU & GPU accessible)
     T* getUnifiedDataPtr() const { return unified_data_ptr_; }
+    T* getDeviceDataPtr() const { return data_ptr_d_; }
+    T* getDeviceLocalPtr() const { return local_ptr_d_; }
+    T* getDeviceLeftPtr() const { return left_ptr_d_; }
+    T* getDeviceRightPtr() const { return right_ptr_d_; }
+    T* getDeviceCpuResultsPtr() const { return cpu_result_ptr_d_; }
+    T* getHostDataPtr() const { return data_ptr_h_; }
+    T* getHostLocalPtr() const { return local_ptr_h_; }
+    T* getHostLeftPtr() const { return left_ptr_h_; }
+    T* getHostRightPtr() const { return right_ptr_h_; }
+    T* getHostCpuResultsPtr() const { return cpu_result_ptr_h_; }
     
     // Setup managed memory (called automatically in constructor with matrix)
     void setupManagedMemory(int leftBufferSize, int rightBufferSize);
@@ -58,7 +75,7 @@ private:
     // Buffer sizes 
     size_t size_recv_left_ = 0;
     size_t size_recv_right_ = 0;
-    size_t size_local = 0;
+    size_t size_local_ = 0;
     
     // Managed memory accessible by both GPU and CPU
     T* unified_data_ptr_ = nullptr; // Points to managed memory: [left|local|right]
@@ -67,13 +84,22 @@ private:
     T* unified_right_ptr_ = nullptr;
     
     // GPU device memory (if needed separately from managed memory)
-    T* d_unified_data_ptr_ = nullptr;
-    bool gpuDataPrepared_ = false;
+    T* data_ptr_d_ = nullptr;
+    T* left_ptr_d_ = nullptr;
+    T* local_ptr_d_ = nullptr;
+    T* right_ptr_d_ = nullptr;
+    T* cpu_result_ptr_d_ = nullptr;
+    
+    // CPU results buffer (malloc'd memory for CPU-only accumulation)
+    T* data_ptr_h_ = nullptr;
+    T* left_ptr_h_ = nullptr;
+    T* local_ptr_h_ = nullptr;
+    T* right_ptr_h_ = nullptr;
+    T* cpu_result_ptr_h_ = nullptr;
 
     // Helper methods
     void setupUnifiedMemory();
     void cleanupUnifiedMemory();
-    void cleanupGPUData();
 };
 
 #endif // HBDIAVECTOR_HPP

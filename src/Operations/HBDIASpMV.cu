@@ -5,6 +5,9 @@
 #include <thread>
 #include <atomic>
 #include <chrono>
+#include <omp.h>
+#include <cusparse.h>
+#include "../../include/types.hpp"
 #include "../../include/Format/HBDIA.hpp"
 #include "../../include/Format/HBDIAVector.hpp"
 
@@ -14,7 +17,6 @@ template<typename T>
 __global__ void hbdia_spmv_kernel(
     const T* __restrict__ hbdiaData,
     const int* __restrict__ flattenedOffsets,
-    const int* __restrict__ blockSizes,
     const int* __restrict__ blockStartIndices,
     const T* __restrict__ inputVector,
     int numBlocks,
@@ -39,16 +41,14 @@ __global__ void hbdia_spmv_kernel(
     
     // Get block information
     int blockStart = blockStartIndices[currentBlock];
-    int blockSize = blockSizes[currentBlock];
+    int blockSize = blockStartIndices[currentBlock+1] - blockStart;
     
     if (blockSize == 0) {
-        // Note: We don't write zeros here since CPU might contribute to this row
         return;
     }
     
     // Calculate lane within block
     int lane = row % blockWidth;
-
     
     // Process all offsets in this block
     for (int offsetIdx = 0; offsetIdx < blockSize; offsetIdx++) {
@@ -88,8 +88,21 @@ __global__ void hbdia_spmv_kernel(
         sum += matrixValue * vectorValue;
     }
     
-    if (sum != T(0)) {
-        outputVector[row] = sum;
+    outputVector[row] = sum;  // Directly accumulate into output vector
+}
+
+// GPU kernel for vector addition - aggregates CPU results with GPU results
+template<typename T>
+__global__ void vector_add_kernel(
+    T* __restrict__ dest,           // Destination vector (GPU results in unified memory)
+    const T* __restrict__ src,      // Source vector (CPU results buffer)
+    int numElements                 // Number of elements to add
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    if (idx < numElements) {
+        // Only add if source element is non-zero to avoid unnecessary operations
+        dest[idx] += src[idx];
     }
 }
 
@@ -101,20 +114,27 @@ void hbdia_cpu_coo_spmv(
     const std::vector<T>& cpuValues,
     const T* inputVector,
     int numRows,
-    std::vector<T>& cpuResults  // Separate CPU results buffer
+    T* cpuResults  // CPU results buffer from HBDIAVector
 ) {
-    // Initialize CPU results to zero
-    cpuResults.assign(numRows, T(0));
+    auto start = std::chrono::high_resolution_clock::now();
     
-    // Process each CPU fallback entry - single threaded for optimal performance
-    for (size_t i = 0; i < cpuRowIndices.size(); ++i) {
+    size_t nnz = cpuRowIndices.size();
+    if (nnz == 0) return;
+    
+    #pragma omp parallel for
+    for (size_t i = 0; i < nnz; ++i) {
         int row = cpuRowIndices[i];
         int col = cpuColIndices[i];
-        T value = cpuValues[i];
-        
-        T result = value * inputVector[col];
-        cpuResults[row] += result;  // Simple addition in CPU memory
+        T coeff = cpuValues[i];
+        T value = inputVector[col];
+        T result = coeff * value;
+        #pragma omp atomic
+        cpuResults[row] += result;
     }
+    
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed = end - start;
+    //std::cout << "CPU COO SpMV processing time (OpenMP): " << elapsed.count() * 1000 << " ms" << std::endl;
 }
 
 template<typename T>
@@ -124,12 +144,9 @@ void hbdia_cpu_coo_spmv_partial(
     const std::vector<T>& cpuValues,
     const T* inputVector,
     int numRows,
-    std::vector<T>& cpuResults,  // Separate CPU results buffer
+    T* cpuResults,  // CPU results buffer from HBDIAVector
     const HBDIA<T>& matrix      // Matrix object to use findMemoryOffsetForGlobalIndex
 ) {
-    // Initialize CPU results to zero
-    cpuResults.assign(numRows, T(0));
-    
     // Get metadata needed for memory offset calculation
     const auto& metadata = matrix.getPartialMatrixMetadata();
     int leftBufferSize = 0;
@@ -193,68 +210,78 @@ void hbdia_cpu_coo_spmv_partial(
 template<typename T>
 bool hbdiaSpMV(const HBDIA<T>& matrix, const HBDIAVector<T>& inputVector, HBDIAVector<T>& outputVector) {
     // Get matrix dimensions and block information
-    int numBlocks = static_cast<int>(matrix.getOffsetsPerBlock().size());
+
     int numRows = matrix.getNumRows();
-    int blockWidth = matrix.getBlockWidth();
+
     bool isPartialMatrix = matrix.isPartialMatrix();
 
     // Get pointer to the local section of the output vector in unified memory
     T* outputPtr = outputVector.getLocalDataPtr();
+
+    cudaStream_t stream_compute;
+    CHECK_CUDA(cudaStreamCreate(&stream_compute));
     
-    // Get CPU fallback data
-    const auto& cpuRowIndices = matrix.getCpuRowIndices();
-    const auto& cpuColIndices = matrix.getCpuColIndices();
-    const auto& cpuValues = matrix.getCpuValues();
-    
-    // Launch GPU kernel configuration
-    int threadsPerBlock = THREADS_PER_BLOCK_SPMV;
-    int numBlocks_grid = (numRows + threadsPerBlock - 1) / threadsPerBlock;
-    
-    
-    // GPU thread - launches kernel and measures its execution time
-    // Launch GPU kernel (blocking in this thread)
-    hbdia_spmv_kernel<<<numBlocks_grid, threadsPerBlock>>>(
-        matrix.getHBDIADataDevice(),           // Matrix data on GPU
-        matrix.getFlattenedOffsetsDevice(),    // Flattened offsets
-        matrix.getBlockSizesDevice(),          // Block sizes
-        matrix.getBlockStartIndicesDevice(),   // Block start indices
-        inputVector.getUnifiedDataPtr(),       // Input vector (unified memory)
-        numBlocks,                             // Number of blocks
-        blockWidth,                            // Block width
-        numRows,                               // Number of rows
-        outputPtr,                             // Output vector (unified memory)
-        isPartialMatrix,                       // Flag for partial matrix
-        matrix.getFlattenedVectorOffsetsDevice() // Vector offsets (null for non-partial)
-    );
-    
-    // CPU processing with separate accumulation buffer
-    std::vector<T> cpuResults;
-    std::thread cpuThread;
-    bool hasCpuWork = !cpuValues.empty();
-            
-    // For distributed SpMV, CPU also needs to use the unified memory for column access
-    const T* cpuInputPtr = inputVector.getUnifiedDataPtr();
-    
-    if (isPartialMatrix) {
-        // For partial matrices, use the specialized function that handles global column indices
-        hbdia_cpu_coo_spmv_partial<T>(cpuRowIndices, cpuColIndices, cpuValues, cpuInputPtr, numRows, cpuResults, matrix);
-    } else {
-        // For non-partial matrices, use the original function
-        hbdia_cpu_coo_spmv<T>(cpuRowIndices, cpuColIndices, cpuValues, cpuInputPtr, numRows, cpuResults);
-    }
-    
-    // Wait for GPU to complete
-    cudaDeviceSynchronize();
-    
-    // Combine CPU results with GPU results if CPU processing occurred
-    if (hasCpuWork) {
-        // CPU results are in CPU memory, output is in unified memory
-        for (int i = 0; i < numRows; ++i) {
-            if (cpuResults[i] != T(0)) {
-                outputPtr[i] += cpuResults[i];
+    // Use OpenMP to parallelize GPU and CPU execution
+    #pragma omp parallel sections num_threads(2)
+    {
+        #pragma omp section
+        {
+            int numBlocks = matrix.getNumBlocks();
+            int blockWidth = matrix.getBlockWidth();
+            // Launch GPU kernel configuration
+            int threadsPerBlock = THREADS_PER_BLOCK_SPMV;
+            int numBlocks_grid = (numRows + threadsPerBlock - 1) / threadsPerBlock;
+            // GPU Section - Launch kernel and wait for completion
+            hbdia_spmv_kernel<<<numBlocks_grid, threadsPerBlock>>>(
+                matrix.getHBDIADataDevice(),           // Matrix data on GPU
+                matrix.getFlattenedOffsetsDevice(),    // Flattened offsets
+                matrix.getBlockStartIndicesDevice(),   // Block start indices
+                inputVector.getDeviceDataPtr(),       // Input vector
+                numBlocks,                             // Number of blocks
+                blockWidth,                            // Block width
+                numRows,                               // Number of rows
+                outputVector.getDeviceLocalPtr(),      // Output vector - FIXED: use device pointer
+                false,//isPartialMatrix,                       // Flag for partial matrix
+                matrix.getFlattenedVectorOffsetsDevice() // Vector offsets (null for non-partial)
+            );
+        }
+        
+        #pragma omp section
+        {
+            // Get CPU fallback data
+            const auto& cpuRowIndices = matrix.getCpuRowIndices();
+            const auto& cpuColIndices = matrix.getCpuColIndices();
+            const auto& cpuValues = matrix.getCpuValues();
+            // Check if we have CPU work to do
+            bool hasCPUWork = !cpuValues.empty();
+
+            if(hasCPUWork){
+                //create cuda stream for CPU operations
+                // cudaStream_t stream_memcpy;
+                // CHECK_CUDA(cudaStreamCreate(&stream_memcpy));
+                // 1. copy input vector to host memory asynchronously
+                //CHECK_CUDA(cudaMemcpyAsync(inputVector.getHostDataPtr(), inputVector.getDeviceDataPtr(), inputVector.getTotalSize() * sizeof(T), cudaMemcpyDeviceToDevice, stream_memcpy));
+                // 2. Prepare CPU results buffer in output vector
+                //std::fill(outputVector.getHostCpuResultsPtr(), outputVector.getHostCpuResultsPtr() + numRows, T(0));
+                // 3 compute CPU results
+                //CHECK_CUDA(cudaStreamSynchronize(stream_memcpy));
+                hbdia_cpu_coo_spmv<T>(cpuRowIndices, cpuColIndices, cpuValues, inputVector.getDeviceLocalPtr(), numRows, outputVector.getDeviceCpuResultsPtr());
+                // 4. Copy CPU results back to device asynchronously
+                //CHECK_CUDA(cudaMemcpyAsync(outputVector.getDeviceCpuResultsPtr(), outputVector.getHostCpuResultsPtr(), numRows * sizeof(T), cudaMemcpyDeviceToDevice, stream_memcpy));
+                // 5. Add CPU results to GPU results
+                int threadsPerBlock_add = THREADS_PER_BLOCK_VECTOR_ADD;
+                int numBlocks_add = (numRows + threadsPerBlock_add - 1) / threadsPerBlock_add;
+                //CHECK_CUDA(cudaStreamSynchronize(stream_memcpy));
+                vector_add_kernel<<<numBlocks_add, threadsPerBlock_add>>>(
+                    outputVector.getDeviceLocalPtr(),  // Destination vector (GPU results) - FIXED
+                    outputVector.getDeviceCpuResultsPtr(), // Source vector (CPU results buffer)
+                    numRows  // Number of elements to add
+                );
             }
         }
     }
+
+    CHECK_CUDA(cudaDeviceSynchronize());
 
     return true;
 }
@@ -263,7 +290,6 @@ bool hbdiaSpMV(const HBDIA<T>& matrix, const HBDIAVector<T>& inputVector, HBDIAV
 template __global__ void hbdia_spmv_kernel<float>(
     const float* __restrict__ hbdiaData,
     const int* __restrict__ flattenedOffsets,
-    const int* __restrict__ blockSizes,
     const int* __restrict__ blockStartIndices,
     const float* __restrict__ inputVector,
     int numBlocks,
@@ -277,7 +303,6 @@ template __global__ void hbdia_spmv_kernel<float>(
 template __global__ void hbdia_spmv_kernel<double>(
     const double* __restrict__ hbdiaData,
     const int* __restrict__ flattenedOffsets,
-    const int* __restrict__ blockSizes,
     const int* __restrict__ blockStartIndices,
     const double* __restrict__ inputVector,
     int numBlocks,
@@ -288,6 +313,19 @@ template __global__ void hbdia_spmv_kernel<double>(
     const int* __restrict__ flattenedVectorOffsets
 );
 
+// Explicit template instantiations for vector addition kernel
+template __global__ void vector_add_kernel<float>(
+    float* __restrict__ dest,
+    const float* __restrict__ src,
+    int numElements
+);
+
+template __global__ void vector_add_kernel<double>(
+    double* __restrict__ dest,
+    const double* __restrict__ src,
+    int numElements
+);
+
 // Explicit template instantiations for CPU function
 template void hbdia_cpu_coo_spmv<float>(
     const std::vector<int>& cpuRowIndices,
@@ -295,7 +333,7 @@ template void hbdia_cpu_coo_spmv<float>(
     const std::vector<float>& cpuValues,
     const float* inputVector,
     int numRows,
-    std::vector<float>& cpuResults
+    float* cpuResults  // CPU results buffer from HBDIAVector
 );
 
 template void hbdia_cpu_coo_spmv<double>(
@@ -304,7 +342,7 @@ template void hbdia_cpu_coo_spmv<double>(
     const std::vector<double>& cpuValues,
     const double* inputVector,
     int numRows,
-    std::vector<double>& cpuResults
+    double* cpuResults  // CPU results buffer from HBDIAVector
 );
 
 // Explicit template instantiations for partial CPU function
@@ -314,7 +352,7 @@ template void hbdia_cpu_coo_spmv_partial<float>(
     const std::vector<float>& cpuValues,
     const float* inputVector,
     int numRows,
-    std::vector<float>& cpuResults,
+    float* cpuResults,  // CPU results buffer from HBDIAVector
     const HBDIA<float>& matrix
 );
 
@@ -324,7 +362,7 @@ template void hbdia_cpu_coo_spmv_partial<double>(
     const std::vector<double>& cpuValues,
     const double* inputVector,
     int numRows,
-    std::vector<double>& cpuResults,
+    double* cpuResults,  // CPU results buffer from HBDIAVector
     const HBDIA<double>& matrix
 );
 

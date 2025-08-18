@@ -6,9 +6,10 @@ using DataType = double;
 
 // HBDIA Default Parameters
 #define DEFAULT_BLOCK_WIDTH 32
-#define DEFAULT_THRESHOLD 16
-#define MAX_CPU_ENTRIES 10000
-#define NUMBER_THREADS_SPMV 1  // CPU threads for GH200 hybrid SpMV
+#define DEFAULT_THRESHOLD 1
+#define MAX_CPU_ENTRIES 2000
+#define THREADS_PER_BLOCK_SPMV 512  // GPU threads per block for SpMV
+#define THREADS_PER_BLOCK_VECTOR_ADD 256  // GPU threads per block for vector addition
 
 
 // MPI Error Checking Macro - simple version without exceptions

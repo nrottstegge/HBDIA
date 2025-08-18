@@ -527,7 +527,7 @@ bool MPICommunicator<T>::gatherVectorData(const HBDIAVector<T>& localVector, std
     }
 
     // Gather the actual data
-    const T* sendbuf = localVector.getLocalDataPtr();
+    const T* sendbuf = localVector.getDeviceLocalPtr();
     CHECK_MPI(MPI_Gatherv(sendbuf, localSize, this->mpi_datatype,
                          this->rank_ == rootRank ? globalVector.data() : nullptr,
                          this->rank_ == rootRank ? recvCounts.data() : nullptr,

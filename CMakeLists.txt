@@ -12,6 +12,14 @@ set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -arch=sm_90 -lineinfo")
 # Find CUDA package
 find_package(CUDAToolkit REQUIRED)
 
+# Find OpenMP for CPU optimization
+find_package(OpenMP REQUIRED)
+
+# Find NVPL sparse from NVIDIA HPC SDK
+set(NVPL_ROOT "/opt/nvidia/hpc_sdk/Linux_aarch64/24.3/math_libs/nvpl")
+set(NVPL_INCLUDE_DIR "${NVPL_ROOT}/include")
+set(NVPL_LIBRARY_DIR "${NVPL_ROOT}/lib")
+
 # Set MPI paths based on the working HighPerformanceHPCG_Thesis configuration
 set(MPI_CXX_INCLUDE_PATH "/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/cray-mpich-8.1.30-wb5peugemrg2ebx7psp2iz2abmqy3rgz/include")
 set(MPI_CXX_LIBRARIES "/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/cray-mpich-8.1.30-wb5peugemrg2ebx7psp2iz2abmqy3rgz/lib/libmpi_gnu_123.so;/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/cray-gtl-8.1.30-yjzx5mja37woqidkb7lj6lpbu3omqrsr/lib/libmpi_gtl_cuda.so")
@@ -25,8 +33,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # Set compiler flags for optimization and debugging
-set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -Wall -Wextra")
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -mcpu=native -ffp-contract=fast -fopenmp")
 
 # Add MPI definitions (following HighPerformanceHPCG_Thesis pattern)
 add_definitions(-DMPI_GPU_AWARE)
@@ -36,6 +43,7 @@ include_directories(include/Format)
 include_directories(include)
 include_directories(${MPI_CXX_INCLUDE_DIRS})
 include_directories(${CUDAToolkit_INCLUDE_DIRS})
+include_directories(${NVPL_INCLUDE_DIR})
 
 # Create the main HBDIA library directly
 add_library(HBDIA STATIC
@@ -54,6 +62,7 @@ target_include_directories(HBDIA PUBLIC
     ${CMAKE_SOURCE_DIR}/include
     ${MPI_CXX_INCLUDE_DIRS}
     ${CUDAToolkit_INCLUDE_DIRS}
+    ${NVPL_INCLUDE_DIR}
 )
 
 # Add the test executable
@@ -63,6 +72,15 @@ add_executable(test_HBDIA
 
 # Link the test with the HBDIA library
 target_link_libraries(test_HBDIA HBDIA MPI::MPI_CXX CUDA::cudart)
+
+# Link HBDIA library with necessary dependencies including NVPL sparse
+target_link_libraries(HBDIA PUBLIC 
+    MPI::MPI_CXX 
+    CUDA::cudart 
+    CUDA::cusparse
+    OpenMP::OpenMP_CXX
+    ${NVPL_SPARSE_LIB}
+)
 
 # Add tests subdirectory
 add_subdirectory(tests)

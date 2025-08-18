@@ -547,11 +547,23 @@ void HBDIAPrinter<T>::printVectorMemoryLayout(const HBDIAVector<T>& vector) {
     std::cout << "  unified_left_ptr_: " << (vector.unified_left_ptr_ ? "set" : "null") << std::endl;
     std::cout << "  unified_local_ptr_: " << (vector.unified_local_ptr_ ? "set" : "null") << std::endl;
     std::cout << "  unified_right_ptr_: " << (vector.unified_right_ptr_ ? "set" : "null") << std::endl;
-    std::cout << "  d_unified_data_ptr_: " << (vector.d_unified_data_ptr_ ? "allocated" : "null") << std::endl;
-    std::cout << "  GPU data prepared: " << (vector.gpuDataPrepared_ ? "yes" : "no") << std::endl;
+    
+    std::cout << "\nDevice Memory Status:" << std::endl;
+    std::cout << "  data_ptr_d_: " << (vector.data_ptr_d_ ? "allocated" : "null") << std::endl;
+    std::cout << "  left_ptr_d_: " << (vector.left_ptr_d_ ? "allocated" : "null") << std::endl;
+    std::cout << "  local_ptr_d_: " << (vector.local_ptr_d_ ? "allocated" : "null") << std::endl;
+    std::cout << "  right_ptr_d_: " << (vector.right_ptr_d_ ? "allocated" : "null") << std::endl;
+    std::cout << "  cpu_result_ptr_d_: " << (vector.cpu_result_ptr_d_ ? "allocated" : "null") << std::endl;
+    
+    std::cout << "\nHost Memory Status:" << std::endl;
+    std::cout << "  data_ptr_h_: " << (vector.data_ptr_h_ ? "allocated" : "null") << std::endl;
+    std::cout << "  left_ptr_h_: " << (vector.left_ptr_h_ ? "allocated" : "null") << std::endl;
+    std::cout << "  local_ptr_h_: " << (vector.local_ptr_h_ ? "allocated" : "null") << std::endl;
+    std::cout << "  right_ptr_h_: " << (vector.right_ptr_h_ ? "allocated" : "null") << std::endl;
+    std::cout << "  cpu_result_ptr_h_: " << (vector.cpu_result_ptr_h_ ? "allocated" : "null") << std::endl;
     
     if (vector.unified_data_ptr_) {
-        std::cout << "\nMemory Addresses:" << std::endl;
+        std::cout << "\nUnified Memory Addresses:" << std::endl;
         std::cout << "  Base address: " << static_cast<void*>(vector.unified_data_ptr_) << std::endl;
         if (vector.unified_left_ptr_) {
             std::cout << "  Left buffer: " << static_cast<void*>(vector.unified_left_ptr_) << std::endl;
@@ -561,6 +573,40 @@ void HBDIAPrinter<T>::printVectorMemoryLayout(const HBDIAVector<T>& vector) {
         }
         if (vector.unified_right_ptr_) {
             std::cout << "  Right buffer: " << static_cast<void*>(vector.unified_right_ptr_) << std::endl;
+        }
+    }
+    
+    if (vector.data_ptr_d_) {
+        std::cout << "\nDevice Memory Addresses:" << std::endl;
+        std::cout << "  Base device address: " << static_cast<void*>(vector.data_ptr_d_) << std::endl;
+        if (vector.left_ptr_d_) {
+            std::cout << "  Left buffer device: " << static_cast<void*>(vector.left_ptr_d_) << std::endl;
+        }
+        if (vector.local_ptr_d_) {
+            std::cout << "  Local data device: " << static_cast<void*>(vector.local_ptr_d_) << std::endl;
+        }
+        if (vector.right_ptr_d_) {
+            std::cout << "  Right buffer device: " << static_cast<void*>(vector.right_ptr_d_) << std::endl;
+        }
+        if (vector.cpu_result_ptr_d_) {
+            std::cout << "  CPU result device: " << static_cast<void*>(vector.cpu_result_ptr_d_) << std::endl;
+        }
+    }
+    
+    if (vector.data_ptr_h_) {
+        std::cout << "\nHost Memory Addresses:" << std::endl;
+        std::cout << "  Base host address: " << static_cast<void*>(vector.data_ptr_h_) << std::endl;
+        if (vector.left_ptr_h_) {
+            std::cout << "  Left buffer host: " << static_cast<void*>(vector.left_ptr_h_) << std::endl;
+        }
+        if (vector.local_ptr_h_) {
+            std::cout << "  Local data host: " << static_cast<void*>(vector.local_ptr_h_) << std::endl;
+        }
+        if (vector.right_ptr_h_) {
+            std::cout << "  Right buffer host: " << static_cast<void*>(vector.right_ptr_h_) << std::endl;
+        }
+        if (vector.cpu_result_ptr_h_) {
+            std::cout << "  CPU result host: " << static_cast<void*>(vector.cpu_result_ptr_h_) << std::endl;
         }
     }
 }
@@ -588,9 +634,9 @@ template <typename T>
 void HBDIAPrinter<T>::printVectorData(const HBDIAVector<T>& vector, size_t maxElements) {
     const auto& localVec = vector.getLocalVector();
     
-    std::cout << "\nLocal Vector Data (deprecated - after unified memory setup):" << std::endl;
+    std::cout << "\nLocal Vector Data (original std::vector):" << std::endl;
     if (localVec.empty()) {
-        std::cout << "  (empty - data moved to unified memory)" << std::endl;
+        std::cout << "  (empty - data moved to managed memory)" << std::endl;
     } else {
         size_t printCount = std::min(maxElements, localVec.size());
         std::cout << "  First " << printCount << " elements:" << std::endl;
@@ -702,6 +748,74 @@ void HBDIAPrinter<T>::printVectorData(const HBDIAVector<T>& vector, size_t maxEl
             std::cout << "  Local data consistency: " << (matches ? "✓ matches local vector" : "✗ differs from local vector") << std::endl;
         } else if (vector.unified_local_ptr_ && vector.getLocalSize() > 0 && localVec.empty()) {
             std::cout << "  Local data consistency: (local vector empty - data moved to unified memory)" << std::endl;
+        }
+    }
+    
+    // Show separate host memory content if available
+    if (vector.data_ptr_h_ && vector.getTotalSize() > 0) {
+        std::cout << "\nHost Memory Buffer Content:" << std::endl;
+        std::cout << "  Total size: " << vector.getTotalSize() << " elements" << std::endl;
+        std::cout << "  Layout: [left_buffer(" << vector.size_recv_left_ << ") | local_data(" << vector.getLocalSize() 
+                  << ") | right_buffer(" << vector.size_recv_right_ << ")]" << std::endl;
+        
+        // Print Host Left Buffer
+        if (vector.size_recv_left_ > 0 && vector.left_ptr_h_) {
+            size_t leftPrintCount = std::min(maxElements, vector.size_recv_left_);
+            std::cout << "\n  Host Left Buffer (" << vector.size_recv_left_ << " elements):" << std::endl;
+            std::cout << "    [";
+            for (size_t i = 0; i < leftPrintCount; ++i) {
+                if (i > 0) std::cout << ", ";
+                std::cout << std::fixed << std::setprecision(6) << vector.left_ptr_h_[i];
+            }
+            if (vector.size_recv_left_ > maxElements) {
+                std::cout << ", ... (" << (vector.size_recv_left_ - maxElements) << " more)";
+            }
+            std::cout << "]" << std::endl;
+        }
+        
+        // Print Host Local Data Buffer
+        if (vector.getLocalSize() > 0 && vector.local_ptr_h_) {
+            size_t localPrintCount = std::min(maxElements, vector.getLocalSize());
+            std::cout << "\n  Host Local Data (" << vector.getLocalSize() << " elements):" << std::endl;
+            std::cout << "    [";
+            for (size_t i = 0; i < localPrintCount; ++i) {
+                if (i > 0) std::cout << ", ";
+                std::cout << std::fixed << std::setprecision(6) << vector.local_ptr_h_[i];
+            }
+            if (vector.getLocalSize() > maxElements) {
+                std::cout << ", ... (" << (vector.getLocalSize() - maxElements) << " more)";
+            }
+            std::cout << "]" << std::endl;
+        }
+        
+        // Print Host Right Buffer
+        if (vector.size_recv_right_ > 0 && vector.right_ptr_h_) {
+            size_t rightPrintCount = std::min(maxElements, vector.size_recv_right_);
+            std::cout << "\n  Host Right Buffer (" << vector.size_recv_right_ << " elements):" << std::endl;
+            std::cout << "    [";
+            for (size_t i = 0; i < rightPrintCount; ++i) {
+                if (i > 0) std::cout << ", ";
+                std::cout << std::fixed << std::setprecision(6) << vector.right_ptr_h_[i];
+            }
+            if (vector.size_recv_right_ > maxElements) {
+                std::cout << ", ... (" << (vector.size_recv_right_ - maxElements) << " more)";
+            }
+            std::cout << "]" << std::endl;
+        }
+        
+        // Show host CPU results if available
+        if (vector.cpu_result_ptr_h_) {
+            size_t resultPrintCount = std::min(maxElements, vector.getLocalSize());
+            std::cout << "\n  Host CPU Results (" << vector.getLocalSize() << " elements):" << std::endl;
+            std::cout << "    [";
+            for (size_t i = 0; i < resultPrintCount; ++i) {
+                if (i > 0) std::cout << ", ";
+                std::cout << std::fixed << std::setprecision(6) << vector.cpu_result_ptr_h_[i];
+            }
+            if (vector.getLocalSize() > maxElements) {
+                std::cout << ", ... (" << (vector.getLocalSize() - maxElements) << " more)";
+            }
+            std::cout << "]" << std::endl;
         }
     }
 }
