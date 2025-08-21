@@ -14,17 +14,15 @@
 // GPU kernel for HBDIA SpMV - processes block-diagonal elements
 // Supports both single GPU (non-partial) and distributed (partial) matrices
 template<typename T>
-__global__ void hbdia_spmv_kernel(
+__global__ void bdia_spmv_kernel(
     const T* __restrict__ hbdiaData,
     const int* __restrict__ flattenedOffsets,
     const int* __restrict__ blockStartIndices,
     const T* __restrict__ inputVector,
-    int numBlocks,
-    int blockWidth,
-    int numRows,
     T* __restrict__ outputVector,
-    bool isPartialMatrix,
-    const int* __restrict__ flattenedVectorOffsets
+    int numRows,
+    int numBlocks,
+    int blockWidth
 ) {
     int row = blockIdx.x * blockDim.x + threadIdx.x;
     
@@ -52,42 +50,36 @@ __global__ void hbdia_spmv_kernel(
     
     // Process all offsets in this block
     for (int offsetIdx = 0; offsetIdx < blockSize; offsetIdx++) {
-        // Access vector value using appropriate indexing
-        T vectorValue;
-        if (isPartialMatrix) {
-            // For partial matrices, use flattenedVectorOffsets to find the correct location in unified memory
-            int vectorOffsetIdx = blockStart + offsetIdx;
-            int memoryOffset = flattenedVectorOffsets[vectorOffsetIdx] + lane;
 
-            if (memoryOffset >= 0) {
-                vectorValue = inputVector[memoryOffset];
-            } else {
-                // Invalid offset, skip this entry
-                continue;
-            }
-        } else {
-            // For single GPU, get the diagonal offset and calculate column index
-            int offset = flattenedOffsets[blockStart + offsetIdx];
-            int col = row + offset;
-            
-            if (col >= 0 && col < numRows) {
-                vectorValue = inputVector[col];
-            } else {
-                // Out of bounds, skip this entry
-                continue;
-            }
-        }
-        
         // Calculate matrix data index - use blockStart which accounts for variable block sizes
         int matrixDataIdx = blockStart * blockWidth + offsetIdx * blockWidth + lane;
         
         // Access matrix value
         T matrixValue = hbdiaData[matrixDataIdx];
+
+        if(matrixValue == T(0)) {
+            // If matrix value is zero, skip this entry
+            continue;
+        }
+
+        // Access vector value
+        T vectorValue;
+
+        // Get the diagonal offset and calculate column index
+        int offset = flattenedOffsets[blockStart + offsetIdx];
+        int col = row + offset;
+        
+        if (col >= 0 && col < numRows) {
+            vectorValue = inputVector[col];
+        } else {
+            // Out of bounds, skip this entry
+            continue;
+        }
         
         // Accumulate result
         sum += matrixValue * vectorValue;
     }
-    
+
     outputVector[row] = sum;  // Directly accumulate into output vector
 }
 
@@ -120,6 +112,8 @@ void hbdia_cpu_coo_spmv(
     
     size_t nnz = cpuRowIndices.size();
     if (nnz == 0) return;
+
+    std::fill(cpuResults, cpuResults + numRows, T(0)); // Initialize results to zero
     
     #pragma omp parallel for
     for (size_t i = 0; i < nnz; ++i) {
@@ -206,22 +200,120 @@ void hbdia_cpu_coo_spmv_partial(
     }
 }
 
+// Separate method for CPU COO execution
+template<typename T>
+void executeCOOOnCPU(HBDIA<T>& matrix, const HBDIAVector<T>& inputVector, 
+                     HBDIAVector<T>& outputVector, int numRows, 
+                     cudaStream_t sD2H, cudaStream_t sH2D, cudaStream_t sCOO, cudaEvent_t cooEvent) {
+    // Get CPU fallback data
+    const auto& cpuRowIndices = matrix.getCpuRowIndices();
+    const auto& cpuColIndices = matrix.getCpuColIndices();
+    const auto& cpuValues = matrix.getCpuValues();
+    
+    // 1. Copy input vector to host memory asynchronously
+    CHECK_CUDA(cudaMemcpyAsync(inputVector.getHostDataPtr(), inputVector.getDeviceDataPtr(), 
+                               inputVector.getTotalSize() * sizeof(T), cudaMemcpyDeviceToHost, sD2H));
+    CHECK_CUDA(cudaStreamSynchronize(sD2H));
+    
+    // 2. Compute CPU results
+    if (matrix.isPartialMatrix()) {
+        hbdia_cpu_coo_spmv_partial<T>(cpuRowIndices, cpuColIndices, cpuValues, 
+                                      inputVector.getHostDataPtr(), numRows, 
+                                      outputVector.getHostCOOResultsPtr(), matrix);
+    } else {
+        hbdia_cpu_coo_spmv<T>(cpuRowIndices, cpuColIndices, cpuValues, 
+                              inputVector.getHostLocalPtr(), numRows, 
+                              outputVector.getHostCOOResultsPtr());
+    }
+    
+    // 3. Copy CPU results back to device asynchronously
+    CHECK_CUDA(cudaMemcpyAsync(outputVector.getDeviceCOOResultsPtr(), outputVector.getHostCOOResultsPtr(), 
+                               numRows * sizeof(T), cudaMemcpyHostToDevice, sH2D));
+    
+    // Record event after COO work completion
+    cudaEventRecord(cooEvent, sH2D);
+}
+
+// Method for GPU COO execution using cuSPARSE
+template<typename T>
+void executeCOOOnGPU(HBDIA<T>& matrix, const HBDIAVector<T>& inputVector, 
+                     HBDIAVector<T>& outputVector, int numRows, cudaStream_t sCOO, cudaEvent_t cooEvent) {
+    
+    // Get CPU fallback data
+    const auto& cpuRowIndices = matrix.getCpuRowIndices();
+    if (cpuRowIndices.empty()) return;
+    
+    // Ensure cuSPARSE is initialized
+    if (!matrix.isCuSparseInitialized()) {
+        matrix.initializeCuSparse();
+    }
+
+    
+    // Get cuSPARSE objects from matrix
+    cusparseHandle_t handle = matrix.getCuSparseHandle();
+    cusparseSpMatDescr_t matA = matrix.getCOOMatDescr();
+    void* d_buffer = matrix.getCOOBuffer();
+    
+    // Get output destination
+    T* d_cooResult = outputVector.getDeviceCOOResultsPtr();
+    
+    // Create vector descriptors for this specific SpMV call
+    cusparseDnVecDescr_t vecX, vecY;
+    int numCols = matrix.getNumCols();
+    
+    if constexpr (std::is_same_v<T, float>) {
+        cusparseCreateDnVec(&vecX, numCols, (void*)inputVector.getDeviceDataPtr(), CUDA_R_32F);
+        cusparseCreateDnVec(&vecY, numRows, d_cooResult, CUDA_R_32F);
+    } else {
+        cusparseCreateDnVec(&vecX, numCols, (void*)inputVector.getDeviceDataPtr(), CUDA_R_64F);
+        cusparseCreateDnVec(&vecY, numRows, d_cooResult, CUDA_R_64F);
+    }
+    
+    // Execute SpMV
+    T alpha = T(1.0), beta = T(0.0);
+    if constexpr (std::is_same_v<T, float>) {
+        cusparseSpMV(handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha, matA, vecX, &beta, vecY, 
+            CUDA_R_32F, CUSPARSE_SPMV_ALG_DEFAULT, d_buffer);
+    } else {
+        cusparseSpMV(handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha, matA, vecX, &beta, vecY, 
+        CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT, d_buffer);
+    }
+
+    // Record event after COO work completion
+    cudaEventRecord(cooEvent, sCOO);
+    
+    // Cleanup vector descriptors (matrix descriptor and buffer are reused)
+    cusparseDestroyDnVec(vecX);
+    cusparseDestroyDnVec(vecY);
+}
+
 // Host function for hybrid GPU+CPU HBDIA SpMV
 template<typename T>
-bool hbdiaSpMV(const HBDIA<T>& matrix, const HBDIAVector<T>& inputVector, HBDIAVector<T>& outputVector) {
+bool hbdiaSpMV(HBDIA<T>& matrix, const HBDIAVector<T>& inputVector, HBDIAVector<T>& outputVector, 
+               bool execCOOCPU, bool execCOOGPU) {
     // Get matrix dimensions and block information
-
     int numRows = matrix.getNumRows();
 
-    bool isPartialMatrix = matrix.isPartialMatrix();
-
-    // Get pointer to the local section of the output vector in unified memory
-    T* outputPtr = outputVector.getLocalDataPtr();
-
-    cudaStream_t stream_compute;
-    CHECK_CUDA(cudaStreamCreate(&stream_compute));
+    // Ensure streams are initialized
+    if (!matrix.areStreamsInitialized()) {
+        std::cerr << "CUDA streams not initialized. Call matrix.initializeStreams() first." << std::endl;
+        return false;
+    }
     
-    // Use OpenMP to parallelize GPU and CPU execution
+    // Get streams and events from the matrix
+    cudaStream_t sBDIA = matrix.getBDIAStream();
+    cudaStream_t sD2H = matrix.getD2HStream();
+    cudaStream_t sH2D = matrix.getH2DStream();
+    cudaStream_t sCOO = matrix.getCOOStream();
+    cudaStream_t sADD = matrix.getADDStream();
+    cudaEvent_t bdiaEvent = matrix.getBDIAEvent();
+    cudaEvent_t cooEvent = matrix.getCOOEvent();
+
+    // Get CPU fallback data to check if we have COO work
+    const auto& cpuValues = matrix.getCpuValues();
+    bool hasCOOWork = !cpuValues.empty();
+
+    // Use OpenMP to parallelize GPU and CPU/COO execution
     #pragma omp parallel sections num_threads(2)
     {
         #pragma omp section
@@ -231,87 +323,87 @@ bool hbdiaSpMV(const HBDIA<T>& matrix, const HBDIAVector<T>& inputVector, HBDIAV
             // Launch GPU kernel configuration
             int threadsPerBlock = THREADS_PER_BLOCK_SPMV;
             int numBlocks_grid = (numRows + threadsPerBlock - 1) / threadsPerBlock;
-            // GPU Section - Launch kernel and wait for completion
-            hbdia_spmv_kernel<<<numBlocks_grid, threadsPerBlock>>>(
+
+            bdia_spmv_kernel<<<numBlocks_grid, threadsPerBlock, 0, sBDIA>>>(
                 matrix.getHBDIADataDevice(),           // Matrix data on GPU
                 matrix.getFlattenedOffsetsDevice(),    // Flattened offsets
                 matrix.getBlockStartIndicesDevice(),   // Block start indices
                 inputVector.getDeviceDataPtr(),       // Input vector
-                numBlocks,                             // Number of blocks
-                blockWidth,                            // Block width
-                numRows,                               // Number of rows
                 outputVector.getDeviceLocalPtr(),      // Output vector - FIXED: use device pointer
-                false,//isPartialMatrix,                       // Flag for partial matrix
-                matrix.getFlattenedVectorOffsetsDevice() // Vector offsets (null for non-partial)
+                numRows,                               // Number of rows
+                numBlocks,                             // Number of blocks
+                blockWidth                            // Block width
             );
+            // Record event after BDIA kernel completion
+            cudaEventRecord(bdiaEvent, sBDIA);
         }
         
         #pragma omp section
         {
-            // Get CPU fallback data
-            const auto& cpuRowIndices = matrix.getCpuRowIndices();
-            const auto& cpuColIndices = matrix.getCpuColIndices();
-            const auto& cpuValues = matrix.getCpuValues();
-            // Check if we have CPU work to do
-            bool hasCPUWork = !cpuValues.empty();
-
-            if(hasCPUWork){
-                //create cuda stream for CPU operations
-                // cudaStream_t stream_memcpy;
-                // CHECK_CUDA(cudaStreamCreate(&stream_memcpy));
-                // 1. copy input vector to host memory asynchronously
-                //CHECK_CUDA(cudaMemcpyAsync(inputVector.getHostDataPtr(), inputVector.getDeviceDataPtr(), inputVector.getTotalSize() * sizeof(T), cudaMemcpyDeviceToDevice, stream_memcpy));
-                // 2. Prepare CPU results buffer in output vector
-                //std::fill(outputVector.getHostCpuResultsPtr(), outputVector.getHostCpuResultsPtr() + numRows, T(0));
-                // 3 compute CPU results
-                //CHECK_CUDA(cudaStreamSynchronize(stream_memcpy));
-                hbdia_cpu_coo_spmv<T>(cpuRowIndices, cpuColIndices, cpuValues, inputVector.getDeviceLocalPtr(), numRows, outputVector.getDeviceCpuResultsPtr());
-                // 4. Copy CPU results back to device asynchronously
-                //CHECK_CUDA(cudaMemcpyAsync(outputVector.getDeviceCpuResultsPtr(), outputVector.getHostCpuResultsPtr(), numRows * sizeof(T), cudaMemcpyDeviceToDevice, stream_memcpy));
-                // 5. Add CPU results to GPU results
-                int threadsPerBlock_add = THREADS_PER_BLOCK_VECTOR_ADD;
-                int numBlocks_add = (numRows + threadsPerBlock_add - 1) / threadsPerBlock_add;
-                //CHECK_CUDA(cudaStreamSynchronize(stream_memcpy));
-                vector_add_kernel<<<numBlocks_add, threadsPerBlock_add>>>(
-                    outputVector.getDeviceLocalPtr(),  // Destination vector (GPU results) - FIXED
-                    outputVector.getDeviceCpuResultsPtr(), // Source vector (CPU results buffer)
-                    numRows  // Number of elements to add
-                );
+            // Execute COO part based on flags
+            if (hasCOOWork) {
+                if (execCOOCPU) {
+                    executeCOOOnCPU<T>(matrix, inputVector, outputVector, numRows, sD2H, sH2D, sCOO, cooEvent);
+                } else if (execCOOGPU) {
+                    executeCOOOnGPU<T>(matrix, inputVector, outputVector, numRows, sCOO, cooEvent);
+                }
             }
         }
     }
 
-    CHECK_CUDA(cudaDeviceSynchronize());
+    if (hasCOOWork) {
+        // Wait for both BDIA kernel and COO work to complete before vector addition
+        cudaStreamWaitEvent(sADD, bdiaEvent, 0);  // Wait for BDIA kernel
+        cudaStreamWaitEvent(sADD, cooEvent, 0);    // Wait for COO work
+
+        // Add COO results to BDIA results on dedicated ADD stream
+        int threadsPerBlock_add = THREADS_PER_BLOCK_VECTOR_ADD;
+        int numBlocks_add = (numRows + threadsPerBlock_add - 1) / threadsPerBlock_add;
+        vector_add_kernel<<<numBlocks_add, threadsPerBlock_add, 0, sADD>>>(
+            outputVector.getDeviceLocalPtr(),      // Destination vector (BDIA results)
+            outputVector.getDeviceCOOResultsPtr(), // Source vector (COO results buffer)
+            numRows  // Number of elements to add
+        );
+        
+        // Wait for vector addition to complete
+        cudaStreamSynchronize(sADD);
+    } else {
+        // If no COO work, just wait for BDIA kernel
+        cudaEventSynchronize(bdiaEvent);
+    }
 
     return true;
 }
 
 // Explicit template instantiations
-template __global__ void hbdia_spmv_kernel<float>(
+template __global__ void bdia_spmv_kernel<float>(
     const float* __restrict__ hbdiaData,
     const int* __restrict__ flattenedOffsets,
     const int* __restrict__ blockStartIndices,
     const float* __restrict__ inputVector,
-    int numBlocks,
-    int blockWidth,
-    int numRows,
     float* __restrict__ outputVector,
-    bool isPartialMatrix,
-    const int* __restrict__ flattenedVectorOffsets
+    int numRows,
+    int numBlocks,
+    int blockWidth
 );
 
-template __global__ void hbdia_spmv_kernel<double>(
+template __global__ void bdia_spmv_kernel<double>(
     const double* __restrict__ hbdiaData,
     const int* __restrict__ flattenedOffsets,
     const int* __restrict__ blockStartIndices,
     const double* __restrict__ inputVector,
-    int numBlocks,
-    int blockWidth,
-    int numRows,
     double* __restrict__ outputVector,
-    bool isPartialMatrix,
-    const int* __restrict__ flattenedVectorOffsets
+    int numRows,
+    int numBlocks,
+    int blockWidth
 );
+
+template void executeCOOOnGPU<float>(HBDIA<float>& matrix, const HBDIAVector<float>& inputVector, 
+                                      HBDIAVector<float>& outputVector, int numRows, cudaStream_t sCOO, cudaEvent_t cooEvent);
+
+template void executeCOOOnGPU<double>(HBDIA<double>& matrix, const HBDIAVector<double>& inputVector, 
+                                       HBDIAVector<double>& outputVector, int numRows, cudaStream_t sCOO, cudaEvent_t cooEvent);
+
 
 // Explicit template instantiations for vector addition kernel
 template __global__ void vector_add_kernel<float>(
@@ -366,6 +458,15 @@ template void hbdia_cpu_coo_spmv_partial<double>(
     const HBDIA<double>& matrix
 );
 
+// Explicit template instantiations for COO execution methods
+template void executeCOOOnCPU<float>(HBDIA<float>& matrix, const HBDIAVector<float>& inputVector, 
+                                      HBDIAVector<float>& outputVector, int numRows, 
+                                      cudaStream_t sD2H, cudaStream_t sH2D, cudaStream_t sCOO, cudaEvent_t cooEvent);
+
+template void executeCOOOnCPU<double>(HBDIA<double>& matrix, const HBDIAVector<double>& inputVector, 
+                                       HBDIAVector<double>& outputVector, int numRows, 
+                                       cudaStream_t sD2H, cudaStream_t sH2D, cudaStream_t sCOO, cudaEvent_t cooEvent);
+
 // Explicit template instantiations for host function
-template bool hbdiaSpMV<float>(const HBDIA<float>& matrix, const HBDIAVector<float>& inputVector, HBDIAVector<float>& outputVector);
-template bool hbdiaSpMV<double>(const HBDIA<double>& matrix, const HBDIAVector<double>& inputVector, HBDIAVector<double>& outputVector);
+template bool hbdiaSpMV<float>(HBDIA<float>& matrix, const HBDIAVector<float>& inputVector, HBDIAVector<float>& outputVector, bool execCOOCPU, bool execCOOGPU);
+template bool hbdiaSpMV<double>(HBDIA<double>& matrix, const HBDIAVector<double>& inputVector, HBDIAVector<double>& outputVector, bool execCOOCPU, bool execCOOGPU);

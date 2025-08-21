@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Set CUDA architecture
 set(CMAKE_CUDA_ARCHITECTURES 90)
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -arch=sm_90 -lineinfo")
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -arch=sm_80 -lineinfo")
 
 # Find CUDA package
 find_package(CUDAToolkit REQUIRED)
@@ -21,8 +21,8 @@ set(NVPL_INCLUDE_DIR "${NVPL_ROOT}/include")
 set(NVPL_LIBRARY_DIR "${NVPL_ROOT}/lib")
 
 # Set MPI paths based on the working HighPerformanceHPCG_Thesis configuration
-set(MPI_CXX_INCLUDE_PATH "/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/cray-mpich-8.1.30-wb5peugemrg2ebx7psp2iz2abmqy3rgz/include")
-set(MPI_CXX_LIBRARIES "/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/cray-mpich-8.1.30-wb5peugemrg2ebx7psp2iz2abmqy3rgz/lib/libmpi_gnu_123.so;/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/cray-gtl-8.1.30-yjzx5mja37woqidkb7lj6lpbu3omqrsr/lib/libmpi_gtl_cuda.so")
+#set(MPI_CXX_INCLUDE_PATH "/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/cray-mpich-8.1.30-wb5peugemrg2ebx7psp2iz2abmqy3rgz/include")
+#set(MPI_CXX_LIBRARIES "/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/cray-mpich-8.1.30-wb5peugemrg2ebx7psp2iz2abmqy3rgz/lib/libmpi_gnu_123.so;/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/cray-gtl-8.1.30-yjzx5mja37woqidkb7lj6lpbu3omqrsr/lib/libmpi_gtl_cuda.so")
 
 # Find MPI package
 find_package(MPI REQUIRED)
@@ -72,6 +72,16 @@ add_executable(test_HBDIA
 
 # Link the test with the HBDIA library
 target_link_libraries(test_HBDIA HBDIA MPI::MPI_CXX CUDA::cudart)
+
+# Add the benchmark executable
+add_executable(benchmark
+    benchmarking/benchmark.cpp
+    benchmarking/benchCusparse.cpp
+    benchmarking/benchHBDIA.cpp
+)
+
+# Link the benchmark with the HBDIA library
+target_link_libraries(benchmark HBDIA MPI::MPI_CXX CUDA::cudart CUDA::cusparse)
 
 # Link HBDIA library with necessary dependencies including NVPL sparse
 target_link_libraries(HBDIA PUBLIC 

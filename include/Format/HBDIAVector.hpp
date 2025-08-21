@@ -19,13 +19,6 @@ class HBDIAPrinter;
 template <typename T>
 class MPICommunicator;
 
-// Enum to specify vector usage pattern for memory optimization
-enum class VectorUsage {
-    INPUT,    // Read-only input vector (uses ReadMostly advice)
-    OUTPUT,   // Output vector that will be written to
-    INOUT     // Vector used for both input and output
-};
-
 template <typename T>
 class HBDIAVector {
     // Friend classes for access to private members
@@ -56,12 +49,12 @@ public:
     T* getDeviceLocalPtr() const { return local_ptr_d_; }
     T* getDeviceLeftPtr() const { return left_ptr_d_; }
     T* getDeviceRightPtr() const { return right_ptr_d_; }
-    T* getDeviceCpuResultsPtr() const { return cpu_result_ptr_d_; }
+    T* getDeviceCOOResultsPtr() const { return coo_result_ptr_d_; }
     T* getHostDataPtr() const { return data_ptr_h_; }
     T* getHostLocalPtr() const { return local_ptr_h_; }
     T* getHostLeftPtr() const { return left_ptr_h_; }
     T* getHostRightPtr() const { return right_ptr_h_; }
-    T* getHostCpuResultsPtr() const { return cpu_result_ptr_h_; }
+    T* getHostCOOResultsPtr() const { return coo_result_ptr_h_; }
     
     // Setup managed memory (called automatically in constructor with matrix)
     void setupManagedMemory(int leftBufferSize, int rightBufferSize);
@@ -88,14 +81,14 @@ private:
     T* left_ptr_d_ = nullptr;
     T* local_ptr_d_ = nullptr;
     T* right_ptr_d_ = nullptr;
-    T* cpu_result_ptr_d_ = nullptr;
-    
+    T* coo_result_ptr_d_ = nullptr;
+
     // CPU results buffer (malloc'd memory for CPU-only accumulation)
     T* data_ptr_h_ = nullptr;
     T* left_ptr_h_ = nullptr;
     T* local_ptr_h_ = nullptr;
     T* right_ptr_h_ = nullptr;
-    T* cpu_result_ptr_h_ = nullptr;
+    T* coo_result_ptr_h_ = nullptr;
 
     // Helper methods
     void setupUnifiedMemory();

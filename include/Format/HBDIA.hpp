@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 #include <tuple>
+#include <cuda_runtime.h>
+#include <cusparse.h>
 #include "types.hpp"
 
 template <typename T>
@@ -44,7 +46,9 @@ class HBDIA {
         bool isDIAFormat() const;
         bool isCOOFormat() const;
         bool isHBDIAFormat() const;
-        void convertToHBDIAFormat(int blockWidth = DEFAULT_BLOCK_WIDTH, int threshold = DEFAULT_THRESHOLD, bool COOisUnique = false);
+        void convertToHBDIAFormat(int blockWidth = DEFAULT_BLOCK_WIDTH, int threshold = DEFAULT_THRESHOLD, 
+                                 int max_coo_entries = MAX_COO_ENTRIES, bool COOisUnique = false, 
+                                 ExecutionMode execMode = ExecutionMode::GPU_COO);
         
         // Convenience wrapper methods that delegate to HBDIAPrinter
         void print() const;
@@ -58,7 +62,8 @@ class HBDIA {
         // Creates a 27-point stencil matrix for a 3D grid of size nx x ny x nz
         // Each grid point connects to all 26 neighbors + itself in a 3x3x3 cube
         // Uses realistic stencil weights: center=26, faces=-1, edges=-0.1, corners=-0.01
-        void create3DStencil27Point(int nx, int ny, int nz);
+        // noise parameter (0.0-1.0) adds random entries to non-stencil diagonals
+        void create3DStencil27Point(int nx, int ny, int nz, double noise = 0.0, int iteration = 0);
         
         // Format deletion methods
         void deleteCOOFormat();
@@ -82,6 +87,7 @@ class HBDIA {
         const std::vector<T>& getValues() const { return values; }
         const std::vector<int>& getRowIndices() const { return rowIndices; }
         const std::vector<int>& getColIndices() const { return colIndices; }
+        const std::vector<int>& getNnzPerRow() const { return nnzPerRow; }
         
         // Getters for DIA data
         const std::vector<std::vector<T>>& getDiagonals() const { return diagonals; }
@@ -94,13 +100,19 @@ class HBDIA {
         const std::vector<int>& getCpuRowIndices() const { return cpuRowIndices; }
         const std::vector<int>& getCpuColIndices() const { return cpuColIndices; }
         const std::vector<T>& getCpuValues() const { return cpuValues; }
+        const std::vector<int>& getCpuRowPtr() const { return cpuRowPtr; }
         int getBlockWidth() const { return blockWidth; }
         int getThreshold() const { return threshold; }
+        int getMaxCooEntries() const { return max_coo_entries; }
         int getNumBlocks() const { return static_cast<int>(offsetsPerBlock.size()); }
+        ExecutionMode getExecutionMode() const { return executionMode; }
         
-        // Getters for GPU-friendly flattened data structures (removed - use managed memory getters instead)
-
-        // Non-const getters for modification (use carefully)
+        // HBDIA statistics getters
+        int getNumberDiagonals() const { return numberDiagonals; }
+        const std::vector<int>& getHistogramBlocks() const { return histogramBlocks; }
+        const std::vector<int>& getHistogramNnz() const { return histogramNnz; }
+        
+        // Non-const getters for modification
         std::vector<T>& getValuesRef() { return values; }
         std::vector<int>& getRowIndicesRef() { return rowIndices; }
         std::vector<int>& getColIndicesRef() { return colIndices; }
@@ -150,8 +162,40 @@ class HBDIA {
         const int* getBlockSizesDevice() const { return blockSizes_d_; }
         const int* getFlattenedVectorOffsetsDevice() const { return flattenedVectorOffsets_d_; }
         
+        // GPU device memory getters for COO fallback data
+        const int* getCpuRowIndicesDevice() const { return cpuRowIndices_d_; }
+        const int* getCpuColIndicesDevice() const { return cpuColIndices_d_; }
+        const T* getCpuValuesDevice() const { return cpuValues_d_; }
+        const int* getCpuRowPtrDevice() const { return cpuRowPtr_d_; }
+        
         void prepareForGPU(); // Convert to GPU device memory after convertToHBDIAFormat()
         void cleanupGPUData(); // Clean up GPU device memory
+        
+        // CUDA stream and event management for SpMV operations
+        void initializeStreams(); // Initialize CUDA streams and events
+        void cleanupStreams(); // Cleanup CUDA streams and events
+        bool areStreamsInitialized() const { return streamsInitialized_; }
+        
+        // cuSPARSE management for GPU COO execution
+        void initializeCuSparse(); // Initialize cuSPARSE handle and descriptors
+        void cleanupCuSparse(); // Cleanup cuSPARSE objects
+        bool isCuSparseInitialized() const { return cusparseInitialized_; }
+        
+        // Stream getters for SpMV operations
+        cudaStream_t getBDIAStream() const { return sBDIA_; }
+        cudaStream_t getD2HStream() const { return sD2H_; }
+        cudaStream_t getH2DStream() const { return sH2D_; }
+        cudaStream_t getCOOStream() const { return sCOO_; }
+        cudaStream_t getADDStream() const { return sADD_; }
+        cudaEvent_t getBDIAEvent() const { return bdiaEvent_; }
+        cudaEvent_t getCOOEvent() const { return cooEvent_; }
+        
+        // cuSPARSE getters for GPU COO execution
+        cusparseHandle_t getCuSparseHandle() const { return cusparseHandle_; }
+        cusparseSpMatDescr_t getCOOMatDescr() const { return cooMatDescr_; }
+        cusparseDnVecDescr_t getCOOVecX() const { return cooVecX_; }
+        cusparseDnVecDescr_t getCOOVecY() const { return cooVecY_; }
+        void* getCOOBuffer() const { return cooBuffer_; }
         
         void calculateVectorOffsets(int rank, int size);
         
@@ -177,13 +221,22 @@ class HBDIA {
         std::vector<int> cpuRowIndices;              // CPU fallback rows
         std::vector<int> cpuColIndices;              // CPU fallback cols
         std::vector<T> cpuValues;                    // CPU fallback values
+        std::vector<int> cpuRowPtr;                  // CPU fallback row pointers (CSR format)
         int blockWidth;                              // Block width for HBDIA
         int threshold;                               // Threshold for CPU fallback
+        int max_coo_entries;
+        ExecutionMode executionMode;                 // Execution mode for COO fallback
+        
+        // HBDIA statistics
+        int numberDiagonals;                         // Total number of unique diagonals
+        std::vector<int> histogramBlocks;            // Histogram: blocks with x diagonals
+        std::vector<int> histogramNnz;               // Histogram: nnz in blocks with x diagonals
         
         // Matrix metadata
         int numRows;
         int numCols;
         int numNonZeros;
+        std::vector<int> nnzPerRow;                     // Non-zeros count per row
         
         // Global row mapping for distributed matrices
         std::vector<int> globalRowMapping; // Maps local row indices to global row indices
@@ -214,6 +267,31 @@ class HBDIA {
         int* blockStartIndices_d_ = nullptr;    // offset per block where this blocks offsets are stored in flattenedOffsets. so if blockStartIndices[blockId] = 5, then flattenedOffsets[5:5+blockSizes[blockId]] contains the offsets for this block
         int* blockSizes_d_ = nullptr;           // number of offsets per block
         int* flattenedVectorOffsets_d_ = nullptr; // this gives the offset per block where the values for a row are in the unified memory layout. so if flattenedVectorOffsets[blockId][row] = 10, then the values for this row start at unified_data_ptr[10] in the unified memory layout
+        
+        // GPU device memory pointers for COO fallback data (for cuSPARSE execution)
+        int* cpuRowIndices_d_ = nullptr;        // COO row indices on device
+        int* cpuColIndices_d_ = nullptr;        // COO column indices on device  
+        T* cpuValues_d_ = nullptr;              // COO values on device
+        int* cpuRowPtr_d_ = nullptr;        // COO row indices on device
+        
+        // CUDA streams and events for SpMV operations
+        cudaStream_t sBDIA_ = nullptr;          // BDIA kernel stream
+        cudaStream_t sD2H_ = nullptr;           // Device to Host transfers
+        cudaStream_t sH2D_ = nullptr;           // Host to Device transfers  
+        cudaStream_t sCOO_ = nullptr;           // cuSPARSE COO execution
+        cudaStream_t sADD_ = nullptr;           // Vector addition stream
+        cudaEvent_t bdiaEvent_ = nullptr;       // Event for BDIA kernel completion
+        cudaEvent_t cooEvent_ = nullptr;        // Event for COO work completion
+        bool streamsInitialized_ = false;      // Flag to track if streams are initialized
+        
+        // cuSPARSE objects for GPU COO execution
+        cusparseHandle_t cusparseHandle_ = nullptr;     // cuSPARSE handle
+        cusparseSpMatDescr_t cooMatDescr_ = nullptr;    // COO matrix descriptor
+        cusparseDnVecDescr_t cooVecX_ = nullptr;        // Input vector descriptor
+        cusparseDnVecDescr_t cooVecY_ = nullptr;        // Output vector descriptor
+        void* cooBuffer_ = nullptr;                     // cuSPARSE workspace buffer
+        size_t cooBufferSize_ = 0;                      // Buffer size
+        bool cusparseInitialized_ = false;             // Flag for cuSPARSE initialization
 };
 
 #endif // HBDIA_HPP

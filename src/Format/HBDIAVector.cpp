@@ -66,7 +66,7 @@ void HBDIAVector<T>::setupUnifiedMemory() {
     int deviceId;
     CHECK_CUDA(cudaGetDevice(&deviceId));
     
-    CHECK_CUDA(cudaMallocManaged(&data_ptr_d_, totalSize * sizeof(T)));
+    CHECK_CUDA(cudaMalloc(&data_ptr_d_, totalSize * sizeof(T)));
 
     CHECK_CUDA(cudaMemset(data_ptr_d_, 0, totalSize * sizeof(T)));
     left_ptr_d_ = data_ptr_d_;
@@ -74,21 +74,23 @@ void HBDIAVector<T>::setupUnifiedMemory() {
     right_ptr_d_ = data_ptr_d_ + size_recv_left_ + size_local_;
     CHECK_CUDA(cudaMemcpy(local_ptr_d_, localVector_.data(), size_local_ * sizeof(T), cudaMemcpyHostToDevice));
 
-    CHECK_CUDA(cudaMallocManaged(&cpu_result_ptr_d_, size_local_ * sizeof(T)));
-    CHECK_CUDA(cudaMemset(cpu_result_ptr_d_, 0, size_local_ * sizeof(T)));
+    CHECK_CUDA(cudaMalloc(&coo_result_ptr_d_, size_local_ * sizeof(T)));
+    CHECK_CUDA(cudaMemset(coo_result_ptr_d_, 0, size_local_ * sizeof(T)));
 
     //data_ptr_h_ = (T*)malloc(totalSize * sizeof(T));
-    CHECK_CUDA(cudaMallocManaged(&data_ptr_h_, totalSize * sizeof(T)));
+    //CHECK_CUDA(cudaMallocManaged(&data_ptr_h_, totalSize * sizeof(T)));
     //cudaMemAdvise(data_ptr_h_, totalSize * sizeof(T), cudaMemAdviseSetPreferredLocation, deviceId);
+    CHECK_CUDA(cudaMallocHost(&data_ptr_h_, totalSize * sizeof(T)));
     std::fill(data_ptr_h_, data_ptr_h_ + totalSize, T{});
     left_ptr_h_ = data_ptr_h_;
     local_ptr_h_ = data_ptr_h_ + size_recv_left_;
     right_ptr_h_ = data_ptr_h_ + size_recv_left_ + size_local_;
     
     //cpu_result_ptr_h_ = (T*)malloc(size_local_ * sizeof(T));
-    CHECK_CUDA(cudaMallocManaged(&cpu_result_ptr_h_, size_local_ * sizeof(T)));
+    //CHECK_CUDA(cudaMallocManaged(&cpu_result_ptr_h_, size_local_ * sizeof(T)));
     //cudaMemAdvise(cpu_result_ptr_h_, size_local_ * sizeof(T), cudaMemAdviseSetPreferredLocation, deviceId);
-    std::fill(cpu_result_ptr_h_, cpu_result_ptr_h_ + size_local_, T{});
+    CHECK_CUDA(cudaMallocHost(&coo_result_ptr_h_, size_local_ * sizeof(T)));
+    std::fill(coo_result_ptr_h_, coo_result_ptr_h_ + size_local_, T{});
 
     // Set up unified pointers to point to the same allocated memory
     unified_left_ptr_ = nullptr;
@@ -192,17 +194,17 @@ void HBDIAVector<T>::cleanupUnifiedMemory() {
         cudaFree(data_ptr_d_);
         data_ptr_d_ = nullptr;
     }
-    if(cpu_result_ptr_d_) {
-        cudaFree(cpu_result_ptr_d_);
-        cpu_result_ptr_d_ = nullptr;
+    if(coo_result_ptr_d_) {
+        cudaFree(coo_result_ptr_d_);
+        coo_result_ptr_d_ = nullptr;
     }
     if(data_ptr_h_) {
         cudaFree(data_ptr_h_);
         data_ptr_h_ = nullptr;
     }
-    if(cpu_result_ptr_h_) {
-        cudaFree(cpu_result_ptr_h_);
-        cpu_result_ptr_h_ = nullptr;
+    if(coo_result_ptr_h_) {
+        cudaFree(coo_result_ptr_h_);
+        coo_result_ptr_h_ = nullptr;
     }
 }
 

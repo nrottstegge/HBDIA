@@ -131,7 +131,7 @@ int main(int argc, char *argv[]){
     
     // Run hybrid SpMV with timing
     auto start = std::chrono::high_resolution_clock::now();
-    bool success = hbdiaSpMV(localMatrix, hbdiaVector, outputVector);
+    bool success = hbdiaSpMV(localMatrix, hbdiaVector, outputVector, false, false);
     auto end = std::chrono::high_resolution_clock::now();
     
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);

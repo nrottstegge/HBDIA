@@ -12,14 +12,17 @@
 #include <unordered_set>
 #include <map>
 #include <cuda_runtime.h>
+#include <cusparse.h>
 #include <limits.h>
+#include <omp.h>
+#include <random>
 
 template <typename T>
-HBDIA<T>::HBDIA() : numRows(0), numCols(0), numNonZeros(0), partialMatrix(false), hasCOO(false), hasDIA(false), hasHBDIA(false) {}
+HBDIA<T>::HBDIA() : numRows(0), numCols(0), numNonZeros(0), partialMatrix(false), hasCOO(false), hasDIA(false), hasHBDIA(false), numberDiagonals(0) {}
 
 template <typename T>
 HBDIA<T>::HBDIA(const std::vector<int>& rowIndices, const std::vector<int>& colIndices, const std::vector<T>& values) 
-    : values(values), rowIndices(rowIndices), colIndices(colIndices), partialMatrix(false), hasCOO(true), hasDIA(false), hasHBDIA(false) {
+    : values(values), rowIndices(rowIndices), colIndices(colIndices), partialMatrix(false), hasCOO(true), hasDIA(false), hasHBDIA(false), numberDiagonals(0) {
     
     // Validate that all vectors have the same size
     if (rowIndices.size() != colIndices.size() || rowIndices.size() != values.size()) {
@@ -49,7 +52,7 @@ template <typename T>
 HBDIA<T>::HBDIA(const std::vector<int>& rowIndices, const std::vector<int>& colIndices, const std::vector<T>& values, 
                 int numRows, int numCols) 
     : values(values), rowIndices(rowIndices), colIndices(colIndices), numRows(numRows), numCols(numCols), 
-      partialMatrix(false), hasCOO(true), hasDIA(false), hasHBDIA(false) {
+      partialMatrix(false), hasCOO(true), hasDIA(false), hasHBDIA(false), numberDiagonals(0) {
     
     // Validate that all vectors have the same size
     if (rowIndices.size() != colIndices.size() || rowIndices.size() != values.size()) {
@@ -80,7 +83,7 @@ template <typename T>
 HBDIA<T>::HBDIA(const std::vector<int>& rowIndices, const std::vector<int>& colIndices, const std::vector<T>& values, 
                 int numRows, int numCols, const std::vector<int>& globalRowMapping) 
     : values(values), rowIndices(rowIndices), colIndices(colIndices), numRows(numRows), numCols(numCols), 
-      globalRowMapping(globalRowMapping), partialMatrix(false), hasCOO(true), hasDIA(false), hasHBDIA(false) {
+      globalRowMapping(globalRowMapping), partialMatrix(false), hasCOO(true), hasDIA(false), hasHBDIA(false), numberDiagonals(0) {
     
     // Validate that all vectors have the same size
     if (rowIndices.size() != colIndices.size() || rowIndices.size() != values.size()) {
@@ -118,7 +121,7 @@ HBDIA<T>::HBDIA(const std::vector<int>& rowIndices, const std::vector<int>& colI
                 int rank, int size) 
     : values(values), rowIndices(rowIndices), colIndices(colIndices), numRows(numRows), numCols(numCols), 
       globalRowMapping(globalRowMapping), partialMatrix(partialMatrix), numGlobalRows(numGlobalRows), numGlobalCols(numGlobalCols), numGlobalNonZeros(numGlobalNonZeros), 
-      rank_(rank), size_(size), hasCOO(true), hasDIA(false), hasHBDIA(false) {
+      rank_(rank), size_(size), hasCOO(true), hasDIA(false), hasHBDIA(false), numberDiagonals(0) {
     
     // Validate that all vectors have the same size
     if (rowIndices.size() != colIndices.size() || rowIndices.size() != values.size()) {
@@ -476,8 +479,9 @@ void HBDIA<T>::convertToDIAFormat(bool COOisUnique) {
 }
 
 template <typename T>
-void HBDIA<T>::convertToHBDIAFormat(int blockWidth, int threshold, bool COOisUnique) {
-    std::cout << "blockWidth: " << blockWidth << ", threshold: " << threshold << " COOisUnique: " << COOisUnique << std::endl;
+void HBDIA<T>::convertToHBDIAFormat(int blockWidth, int threshold, int max_coo_entries, bool COOisUnique, ExecutionMode execMode) {
+    std::cout << "blockWidth: " << blockWidth << ", threshold: " << threshold << " COOisUnique: " << COOisUnique 
+              << ", execMode: " << (execMode == ExecutionMode::GPU_COO ? "GPU_COO" : "CPU_COO") << std::endl;
     if (hasHBDIA) {
         std::cout << "Matrix is already in HBDIA format" << std::endl;
         return;
@@ -495,6 +499,8 @@ void HBDIA<T>::convertToHBDIAFormat(int blockWidth, int threshold, bool COOisUni
     
     this->blockWidth = blockWidth;
     this->threshold = threshold;
+    this->max_coo_entries = max_coo_entries;
+    this->executionMode = execMode;
     
     // Step 1: Remove duplicates from COO format if not already unique
     if (!COOisUnique) {
@@ -526,16 +532,20 @@ void HBDIA<T>::convertToHBDIAFormat(int blockWidth, int threshold, bool COOisUni
             offsetCountPerBlock[block][offset]++;
         }
     }
+
+    // Used for HBDIA statistics
+    std::set<int> uniqueDiagonals;
     
     // Step 4: Calculate storage requirements and filter offsets
-    int storageRequired = 0;
+    size_t storageRequired = 0;
     std::vector<std::vector<int>> validOffsetsPerBlock(maxNumBlocks);
 
     int cpu_entries = 0;
     
     for (int b = 0; b < maxNumBlocks; ++b) {
         for (const auto& pair : offsetCountPerBlock[b]) {
-            if (pair.second >= threshold || cpu_entries >= MAX_CPU_ENTRIES) {
+            uniqueDiagonals.insert(pair.first);
+            if (pair.second >= threshold || cpu_entries >= max_coo_entries) {
                 validOffsetsPerBlock[b].push_back(pair.first);
                 storageRequired += blockWidth;
             }else{
@@ -546,8 +556,21 @@ void HBDIA<T>::convertToHBDIAFormat(int blockWidth, int threshold, bool COOisUni
         std::sort(validOffsetsPerBlock[b].begin(), validOffsetsPerBlock[b].end());
     }
     
+    numberDiagonals = static_cast<int>(uniqueDiagonals.size());
     
     // Step 5: Allocate contiguous memory and set up pointers
+    std::cout << "Storage required: " << storageRequired << " elements (" 
+              << (storageRequired * sizeof(T) / (1024.0 * 1024.0)) << " MB)" << std::endl;
+    
+    // Safety check to prevent excessive memory allocation
+    size_t maxAllowedElements = static_cast<size_t>(1e11); // 1 billion elements max (~8GB for double)
+    if (storageRequired > maxAllowedElements) {
+        std::cerr << "Error: Storage requirement (" << storageRequired 
+                  << " elements) exceeds maximum allowed (" << maxAllowedElements << ")" << std::endl;
+        std::cerr << "Consider reducing matrix size, increasing threshold, or reducing noise" << std::endl;
+        throw std::runtime_error("Excessive memory requirement for HBDIA format");
+    }
+    
     hbdiaData.resize(storageRequired);
     ptrToBlock.resize(maxNumBlocks, nullptr);
     offsetsPerBlock = std::move(validOffsetsPerBlock);
@@ -564,10 +587,32 @@ void HBDIA<T>::convertToHBDIAFormat(int blockWidth, int threshold, bool COOisUni
     // Step 6: Initialize data to zero
     std::fill(hbdiaData.begin(), hbdiaData.end(), T(0));
     
+    // Calculate histograms
+    int maxDiagonalsPerBlock = 0;
+    for (const auto& blockOffsets : offsetsPerBlock) {
+        maxDiagonalsPerBlock = std::max(maxDiagonalsPerBlock, static_cast<int>(blockOffsets.size()));
+    }
+    
+    histogramBlocks.assign(maxDiagonalsPerBlock + 1, 0);
+    histogramNnz.assign(maxDiagonalsPerBlock + 1, 0);
+    
+    for (const auto& blockOffsets : offsetsPerBlock) {
+        int numOffsets = static_cast<int>(blockOffsets.size());
+        if (numOffsets <= maxDiagonalsPerBlock) {
+            histogramBlocks[numOffsets]++;
+        }
+    }
+    
+    
     // Step 7: Fill data and separate CPU fallback entries
     cpuRowIndices.clear();
     cpuColIndices.clear();
     cpuValues.clear();
+    
+    // Initialize row pointer array for CSR compatibility
+    cpuRowPtr.assign(numRows + 1, 0);
+    int currentRow = -1;
+    int nextOffset = 0;
     
     for (size_t i = 0; i < values.size(); ++i) {
         int localRow = rowIndices[i];
@@ -595,18 +640,40 @@ void HBDIA<T>::convertToHBDIAFormat(int blockWidth, int threshold, bool COOisUni
                 int offsetIndex = std::distance(offsetsPerBlock[block].begin(), it);
                 int dataIndex = offsetIndex * blockWidth + lane;
                 ptrToBlock[block][dataIndex] = v;
+                histogramNnz[offsetsPerBlock[block].size()]++; // Increment non-zero count for this block
             } else {
                 // Offset not stored in GPU format, use CPU fallback
+                if (localRow != currentRow) {
+                    // Fill gaps between current and new row
+                    for (int r = currentRow + 1; r <= localRow; r++) {
+                        cpuRowPtr[r] = nextOffset;
+                    }
+                    currentRow = localRow;
+                }
                 cpuRowIndices.push_back(localRow);
                 cpuColIndices.push_back(c);
                 cpuValues.push_back(v);
+                nextOffset++;
             }
         } else {
             // Block doesn't exist or is empty, use CPU fallback
+            if (localRow != currentRow) {
+                // Fill gaps between current and new row
+                for (int r = currentRow + 1; r <= localRow; r++) {
+                    cpuRowPtr[r] = nextOffset;
+                }
+                currentRow = localRow;
+            }
             cpuRowIndices.push_back(localRow);
             cpuColIndices.push_back(c);
             cpuValues.push_back(v);
+            nextOffset++;
         }
+    }
+    
+    // Finalize row pointer array - fill remaining entries
+    for (int r = currentRow + 1; r <= numRows; r++) {
+        cpuRowPtr[r] = nextOffset;
     }
     
     std::cout << "HBDIA conversion complete:" << std::endl;
@@ -614,9 +681,14 @@ void HBDIA<T>::convertToHBDIAFormat(int blockWidth, int threshold, bool COOisUni
     std::cout << "  CPU fallback: " << cpuValues.size() << " entries" << std::endl;
     std::cout << "  Active blocks: " << std::count_if(ptrToBlock.begin(), ptrToBlock.end(), 
                                                       [](T* ptr) { return ptr != nullptr; }) << "/" << maxNumBlocks << std::endl;
-    
+                                                      
     // Set flag to indicate HBDIA format is available
     hasHBDIA = true;
+
+    // Prepare GPU data structures
+    if(!partialMatrix){
+        prepareForGPU();
+    }
 }
 
 template <typename T>
@@ -662,6 +734,8 @@ void HBDIA<T>::prepareForGPU() {
         if(blockId == offsetsPerBlock.size() - 1) {
             blockStartIndices.push_back(flattenedOffsets.size()); //last block
         }
+
+        initializeStreams();
     }
     
     // Allocate GPU device memory and copy data
@@ -689,6 +763,30 @@ void HBDIA<T>::prepareForGPU() {
         CHECK_CUDA(cudaMalloc(&flattenedVectorOffsets_d_, flattenedVectorOffsets.size() * sizeof(int)));
         CHECK_CUDA(cudaMemcpy(flattenedVectorOffsets_d_, flattenedVectorOffsets.data(), flattenedVectorOffsets.size() * sizeof(int), cudaMemcpyHostToDevice));
     }
+    
+    // Prepare COO data for GPU execution only if execution mode is GPU_COO
+    if (executionMode == ExecutionMode::GPU_COO) {
+        if (!cpuRowIndices.empty()) {
+            CHECK_CUDA(cudaMalloc(&cpuRowIndices_d_, cpuRowIndices.size() * sizeof(int)));
+            CHECK_CUDA(cudaMemcpy(cpuRowIndices_d_, cpuRowIndices.data(), cpuRowIndices.size() * sizeof(int), cudaMemcpyHostToDevice));
+        }
+        
+        if (!cpuColIndices.empty()) {
+            CHECK_CUDA(cudaMalloc(&cpuColIndices_d_, cpuColIndices.size() * sizeof(int)));
+            CHECK_CUDA(cudaMemcpy(cpuColIndices_d_, cpuColIndices.data(), cpuColIndices.size() * sizeof(int), cudaMemcpyHostToDevice));
+        }
+        
+        if (!cpuValues.empty()) {
+            CHECK_CUDA(cudaMalloc(&cpuValues_d_, cpuValues.size() * sizeof(T)));
+            CHECK_CUDA(cudaMemcpy(cpuValues_d_, cpuValues.data(), cpuValues.size() * sizeof(T), cudaMemcpyHostToDevice));
+        }
+
+        if(!cpuValues.empty()){
+            CHECK_CUDA(cudaMalloc(&cpuRowPtr_d_, (numRows + 1) * sizeof(int)));
+            CHECK_CUDA(cudaMemcpy(cpuRowPtr_d_, cpuRowPtr.data(), (numRows + 1) * sizeof(int), cudaMemcpyHostToDevice));
+        }
+    }
+    // For CPU_COO mode, COO data stays on CPU (no device allocation)
 }
 
 template <typename T>
@@ -713,6 +811,198 @@ void HBDIA<T>::cleanupGPUData() {
         cudaFree(flattenedVectorOffsets_d_);
         flattenedVectorOffsets_d_ = nullptr;
     }
+    if (cpuRowIndices_d_) {
+        cudaFree(cpuRowIndices_d_);
+        cpuRowIndices_d_ = nullptr;
+    }
+    if (cpuColIndices_d_) {
+        cudaFree(cpuColIndices_d_);
+        cpuColIndices_d_ = nullptr;
+    }
+    if (cpuValues_d_) {
+        cudaFree(cpuValues_d_);
+        cpuValues_d_ = nullptr;
+    }
+    
+    // Cleanup streams and events as well
+    cleanupStreams();
+    cleanupCuSparse();
+}
+
+template <typename T>
+void HBDIA<T>::initializeStreams() {
+    if (streamsInitialized_) {
+        return; // Already initialized
+    }
+    
+    // Create CUDA streams
+    CHECK_CUDA(cudaStreamCreateWithFlags(&sBDIA_, cudaStreamNonBlocking));
+    CHECK_CUDA(cudaStreamCreateWithFlags(&sD2H_, cudaStreamNonBlocking));
+    CHECK_CUDA(cudaStreamCreateWithFlags(&sH2D_, cudaStreamNonBlocking));
+    CHECK_CUDA(cudaStreamCreateWithFlags(&sCOO_, cudaStreamNonBlocking));
+    CHECK_CUDA(cudaStreamCreateWithFlags(&sADD_, cudaStreamNonBlocking));
+    
+    // Create CUDA events
+    CHECK_CUDA(cudaEventCreate(&bdiaEvent_));
+    CHECK_CUDA(cudaEventCreate(&cooEvent_));
+    
+    streamsInitialized_ = true;
+}
+
+template <typename T>
+void HBDIA<T>::cleanupStreams() {
+    if (!streamsInitialized_) {
+        return; // Nothing to cleanup
+    }
+    
+    // Destroy CUDA events
+    if (bdiaEvent_) {
+        cudaEventDestroy(bdiaEvent_);
+        bdiaEvent_ = nullptr;
+    }
+    if (cooEvent_) {
+        cudaEventDestroy(cooEvent_);
+        cooEvent_ = nullptr;
+    }
+    
+    // Destroy CUDA streams
+    if (sBDIA_) {
+        cudaStreamDestroy(sBDIA_);
+        sBDIA_ = nullptr;
+    }
+    if (sD2H_) {
+        cudaStreamDestroy(sD2H_);
+        sD2H_ = nullptr;
+    }
+    if (sH2D_) {
+        cudaStreamDestroy(sH2D_);
+        sH2D_ = nullptr;
+    }
+    if (sCOO_) {
+        cudaStreamDestroy(sCOO_);
+        sCOO_ = nullptr;
+    }
+    if (sADD_) {
+        cudaStreamDestroy(sADD_);
+        sADD_ = nullptr;
+    }
+    
+    streamsInitialized_ = false;
+}
+
+template <typename T>
+void HBDIA<T>::initializeCuSparse() {
+    if (cusparseInitialized_) {
+        return; // Already initialized
+    }
+    
+    if (!hasHBDIA || cpuRowIndices.empty()) {
+        return; // No COO data to initialize cuSPARSE for
+    }
+    
+    // Ensure streams are initialized first
+    if (!streamsInitialized_) {
+        initializeStreams();
+    }
+    
+    // Create cuSPARSE handle
+    cusparseCreate(&cusparseHandle_);
+    cusparseSetStream(cusparseHandle_, sCOO_);
+    
+    int numCols = getNumCols();
+    int numRows = getNumRows();
+    int nnz = static_cast<int>(cpuRowIndices.size());
+    
+    // Create matrix descriptor
+    if constexpr (std::is_same_v<T, float>) {
+        cusparseCreateCoo(&cooMatDescr_, numRows, numCols, nnz, 
+                                     (void*)cpuRowIndices_d_, (void*)cpuColIndices_d_, (void*)cpuValues_d_,
+                                     CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, CUDA_R_32F);
+    } else {
+        cusparseCreateCoo(&cooMatDescr_, numRows, numCols, nnz, 
+                                     (void*)cpuRowIndices_d_, (void*)cpuColIndices_d_, (void*)cpuValues_d_,
+                                     CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, CUDA_R_64F);
+    }
+    
+    // Note: Vector descriptors will be created in the SpMV function since they depend on the specific vectors
+    
+    // Get buffer size for workspace
+    T alpha = T(1.0), beta = T(0.0);
+    cooBufferSize_ = 0;
+    
+    // Allocate temporary dummy vectors for buffer size calculation
+    // cuSPARSE requires valid device pointers, cannot use nullptr
+    T* tempVecXData = nullptr;
+    T* tempVecYData = nullptr;
+    CHECK_CUDA(cudaMalloc(&tempVecXData, numCols * sizeof(T)));
+    CHECK_CUDA(cudaMalloc(&tempVecYData, numRows * sizeof(T)));
+    
+    // Create temporary vector descriptors with valid pointers
+    cusparseDnVecDescr_t tempVecX, tempVecY;
+    if constexpr (std::is_same_v<T, float>) {
+        cusparseCreateDnVec(&tempVecX, numCols, tempVecXData, CUDA_R_32F);
+        cusparseCreateDnVec(&tempVecY, numRows, tempVecYData, CUDA_R_32F);
+        cusparseSpMV_bufferSize(cusparseHandle_, CUSPARSE_OPERATION_NON_TRANSPOSE, 
+                                           &alpha, cooMatDescr_, tempVecX, &beta, tempVecY, 
+                                           CUDA_R_32F, CUSPARSE_SPMV_ALG_DEFAULT, &cooBufferSize_);
+    } else {
+        cusparseCreateDnVec(&tempVecX, numCols, tempVecXData, CUDA_R_64F);
+        cusparseCreateDnVec(&tempVecY, numRows, tempVecYData, CUDA_R_64F);
+        cusparseSpMV_bufferSize(cusparseHandle_, CUSPARSE_OPERATION_NON_TRANSPOSE, 
+                                           &alpha, cooMatDescr_, tempVecX, &beta, tempVecY, 
+                                           CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT, &cooBufferSize_);
+    }
+    
+    // Cleanup temporary descriptors and memory
+    cusparseDestroyDnVec(tempVecX);
+    cusparseDestroyDnVec(tempVecY);
+    cudaFree(tempVecXData);
+    cudaFree(tempVecYData);
+    
+    // Allocate workspace buffer
+    if (cooBufferSize_ > 0) {
+        CHECK_CUDA(cudaMalloc(&cooBuffer_, cooBufferSize_));
+    }
+    
+    cusparseInitialized_ = true;
+}
+
+template <typename T>
+void HBDIA<T>::cleanupCuSparse() {
+    if (!cusparseInitialized_) {
+        return; // Nothing to cleanup
+    }
+    
+    // Cleanup vector descriptors
+    if (cooVecX_) {
+        cusparseDestroyDnVec(cooVecX_);
+        cooVecX_ = nullptr;
+    }
+    if (cooVecY_) {
+        cusparseDestroyDnVec(cooVecY_);
+        cooVecY_ = nullptr;
+    }
+    
+    // Cleanup matrix descriptor
+    if (cooMatDescr_) {
+        cusparseDestroySpMat(cooMatDescr_);
+        cooMatDescr_ = nullptr;
+    }
+    
+    // Cleanup buffer
+    if (cooBuffer_) {
+        cudaFree(cooBuffer_);
+        cooBuffer_ = nullptr;
+    }
+    cooBufferSize_ = 0;
+    
+    // Cleanup handle
+    if (cusparseHandle_) {
+        cusparseDestroy(cusparseHandle_);
+        cusparseHandle_ = nullptr;
+    }
+    
+    cusparseInitialized_ = false;
 }
 
 template <typename T>
@@ -922,6 +1212,7 @@ void HBDIA<T>::deleteMatrix() {
     cpuRowIndices.clear();
     cpuColIndices.clear();
     cpuValues.clear();
+    cpuRowPtr.clear();
     
     // Reset metadata
     numRows = 0;
@@ -1004,6 +1295,7 @@ void HBDIA<T>::deleteHBDIAFormat() {
     cpuRowIndices.clear();
     cpuColIndices.clear();
     cpuValues.clear();
+    cpuRowPtr.clear();
     blockWidth = 0;
     threshold = 0;
     hasHBDIA = false;
@@ -1097,7 +1389,7 @@ void HBDIA<T>::analyzeDataRanges() {
 
 // Method for creating 3D 27-point stencil matrices
 template <typename T>
-void HBDIA<T>::create3DStencil27Point(int nx, int ny, int nz) {
+void HBDIA<T>::create3DStencil27Point(int nx, int ny, int nz, double noise, int iteration) {
     // Clear any existing data
     values.clear();
     rowIndices.clear();
@@ -1109,27 +1401,59 @@ void HBDIA<T>::create3DStencil27Point(int nx, int ny, int nz) {
     
     int totalNodes = nx * ny * nz;
     
+    // Initialize nnz per row counter
+    nnzPerRow.clear();
+    nnzPerRow.resize(totalNodes, 0);
+    
     // Function to convert 3D coordinates (i,j,k) to linear index
     auto getIndex = [&](int i, int j, int k) -> int {
         return k * nx * ny + j * nx + i;
     };
     
-    // Reserve space for efficiency (each interior node has 27 neighbors)
-    int estimatedNNZ = totalNodes * 27; // Overestimate
+    // Reserve space for efficiency (each interior node has 27 neighbors + noise)
+    long long maxPossibleEntries = static_cast<long long>(totalNodes) * totalNodes;
+    int estimatedNoiseEntries = static_cast<int>(static_cast<double>(totalNodes) * 27 * noise);
+    int estimatedNNZ = totalNodes * 27 + estimatedNoiseEntries; // Overestimate
     rowIndices.reserve(estimatedNNZ);
     colIndices.reserve(estimatedNNZ);
     values.reserve(estimatedNNZ);
     
+    // Initialize noise generation parameters outside the loops for better performance
+    std::mt19937 gen(RAND_SEED + iteration);
+    std::cout << "Using random seed: " << (RAND_SEED + iteration) << " and noise " << noise << std::endl;
+    std::uniform_int_distribution<int> colDist(0, totalNodes - 1);
+    std::uniform_real_distribution<double> valueDist(-1.0, 1.0);
+    
+    // Pre-calculate noise distribution across rows
+    std::vector<int> noiseEntriesPerRow(totalNodes, 0);
+    int totalTargetNoiseEntries = 0;
+    
+    if (noise > 0.0) {
+        long long stencilEntries = totalNodes * 27; // Approximate stencil entries
+        totalTargetNoiseEntries = static_cast<int>(static_cast<double>(stencilEntries) * noise);
+        
+        // Generate random row assignments for all noise entries
+        std::uniform_int_distribution<int> rowDist(0, totalNodes - 1);
+        for (int noiseEntry = 0; noiseEntry < totalTargetNoiseEntries; ++noiseEntry) {
+            int randomRow = rowDist(gen);
+            noiseEntriesPerRow[randomRow]++;
+        }
+        
+        std::cout << "Pre-calculated noise distribution: " << totalTargetNoiseEntries 
+                  << " noise entries distributed across rows" << std::endl;
+    }
+
+
     // Generate 27-point stencil for each grid point
-    for (int k = 0; k < nz; k++) {
+    for (int i = 0; i < nz; i++) {
         for (int j = 0; j < ny; j++) {
-            for (int i = 0; i < nx; i++) {
+            for (int k = 0; k < nx; k++) {
                 int centerIdx = getIndex(i, j, k);
                 
                 // Loop through all 27 stencil points (3x3x3 neighborhood)
-                for (int dk = -1; dk <= 1; dk++) {
+                for (int di = -1; di <= 1; di++) {
                     for (int dj = -1; dj <= 1; dj++) {
-                        for (int di = -1; di <= 1; di++) {
+                        for (int dk = -1; dk <= 1; dk++) {
                             int ni = i + di;  // neighbor i-coordinate
                             int nj = j + dj;  // neighbor j-coordinate  
                             int nk = k + dk;  // neighbor k-coordinate
@@ -1144,14 +1468,15 @@ void HBDIA<T>::create3DStencil27Point(int nx, int ny, int nz) {
                                 // Add matrix entry
                                 rowIndices.push_back(centerIdx);
                                 colIndices.push_back(neighborIdx);
+                                nnzPerRow[centerIdx]++; // Count nnz for this row
                                 
                                 // Set stencil weights
                                 if (di == 0 && dj == 0 && dk == 0) {
                                     // Center point - typically the largest weight
-                                    values.push_back(static_cast<T>(26.0));
+                                    values.push_back(static_cast<T>(26.1));
                                 } else if ((di != 0 ? 1 : 0) + (dj != 0 ? 1 : 0) + (dk != 0 ? 1 : 0) == 1) {
                                     // Face neighbors (6 total) - primary connections
-                                    values.push_back(static_cast<T>(-1.0));
+                                    values.push_back(static_cast<T>(-1.1));
                                 } else if ((di != 0 ? 1 : 0) + (dj != 0 ? 1 : 0) + (dk != 0 ? 1 : 0) == 2) {
                                     // Edge neighbors (12 total) - secondary connections  
                                     values.push_back(static_cast<T>(-0.1));
@@ -1163,6 +1488,57 @@ void HBDIA<T>::create3DStencil27Point(int nx, int ny, int nz) {
                         }
                     }
                 }
+
+                // Add noise entries for this row (if any pre-calculated)
+                int targetNoiseForThisRow = noiseEntriesPerRow[centerIdx];
+                if (targetNoiseForThisRow > 0) {
+                    
+                    // Track which columns we've already used in this row (stencil + noise)
+                    std::set<int> usedCols;
+                    
+                    // Add all stencil columns for this row to the used set
+                    for (int dk = -1; dk <= 1; dk++) {
+                        for (int dj = -1; dj <= 1; dj++) {
+                            for (int di = -1; di <= 1; di++) {
+                                int ni = i + di;
+                                int nj = j + dj;
+                                int nk = k + dk;
+                                
+                                if (ni >= 0 && ni < nx && 
+                                    nj >= 0 && nj < ny && 
+                                    nk >= 0 && nk < nz) {
+                                    int neighborIdx = getIndex(ni, nj, nk);
+                                    usedCols.insert(neighborIdx);
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Add the pre-calculated number of noise entries for this row
+                    int addedNoise = 0;
+                    int attempts = 0;
+                    const int maxAttempts = targetNoiseForThisRow * 10 + 100; // Prevent infinite loops
+                    
+                    while (addedNoise < targetNoiseForThisRow && attempts < maxAttempts) {
+                        attempts++;
+                        
+                        int col = colDist(gen);
+                        
+                        // Skip if this column is already used in this row
+                        if (usedCols.find(col) != usedCols.end()) {
+                            continue;
+                        }
+                        
+                        // Add the noise entry
+                        usedCols.insert(col);
+                        rowIndices.push_back(centerIdx);
+                        colIndices.push_back(col);
+                        values.push_back(static_cast<T>(valueDist(gen)));
+                        addedNoise++;
+                        nnzPerRow[centerIdx]++;
+                    }
+                }
+
             }
         }
     }

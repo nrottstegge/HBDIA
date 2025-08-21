@@ -4,13 +4,21 @@
 
 using DataType = double;
 
+// HBDIA Execution Mode Enum
+enum class ExecutionMode {
+    CPU_COO,    // COO fallback executes on CPU
+    GPU_COO     // COO fallback executes on GPU (cuSPARSE)
+};
+
 // HBDIA Default Parameters
 #define DEFAULT_BLOCK_WIDTH 32
 #define DEFAULT_THRESHOLD 1
-#define MAX_CPU_ENTRIES 2000
-#define THREADS_PER_BLOCK_SPMV 512  // GPU threads per block for SpMV
+#define MAX_COO_ENTRIES 1000000000
+#define THREADS_PER_BLOCK_SPMV 256  // GPU threads per block for SpMV
 #define THREADS_PER_BLOCK_VECTOR_ADD 256  // GPU threads per block for vector addition
 
+#define RAND_SEED 42
+#define NUM_BENCH_ITER 100
 
 // MPI Error Checking Macro - simple version without exceptions
 #define CHECK_MPI(call) \

@@ -553,14 +553,14 @@ void HBDIAPrinter<T>::printVectorMemoryLayout(const HBDIAVector<T>& vector) {
     std::cout << "  left_ptr_d_: " << (vector.left_ptr_d_ ? "allocated" : "null") << std::endl;
     std::cout << "  local_ptr_d_: " << (vector.local_ptr_d_ ? "allocated" : "null") << std::endl;
     std::cout << "  right_ptr_d_: " << (vector.right_ptr_d_ ? "allocated" : "null") << std::endl;
-    std::cout << "  cpu_result_ptr_d_: " << (vector.cpu_result_ptr_d_ ? "allocated" : "null") << std::endl;
-    
+    std::cout << "  coo_result_ptr_d_: " << (vector.coo_result_ptr_d_ ? "allocated" : "null") << std::endl;
+
     std::cout << "\nHost Memory Status:" << std::endl;
     std::cout << "  data_ptr_h_: " << (vector.data_ptr_h_ ? "allocated" : "null") << std::endl;
     std::cout << "  left_ptr_h_: " << (vector.left_ptr_h_ ? "allocated" : "null") << std::endl;
     std::cout << "  local_ptr_h_: " << (vector.local_ptr_h_ ? "allocated" : "null") << std::endl;
     std::cout << "  right_ptr_h_: " << (vector.right_ptr_h_ ? "allocated" : "null") << std::endl;
-    std::cout << "  cpu_result_ptr_h_: " << (vector.cpu_result_ptr_h_ ? "allocated" : "null") << std::endl;
+    std::cout << "  coo_result_ptr_h_: " << (vector.coo_result_ptr_h_ ? "allocated" : "null") << std::endl;
     
     if (vector.unified_data_ptr_) {
         std::cout << "\nUnified Memory Addresses:" << std::endl;
@@ -588,8 +588,8 @@ void HBDIAPrinter<T>::printVectorMemoryLayout(const HBDIAVector<T>& vector) {
         if (vector.right_ptr_d_) {
             std::cout << "  Right buffer device: " << static_cast<void*>(vector.right_ptr_d_) << std::endl;
         }
-        if (vector.cpu_result_ptr_d_) {
-            std::cout << "  CPU result device: " << static_cast<void*>(vector.cpu_result_ptr_d_) << std::endl;
+        if (vector.coo_result_ptr_d_) {
+            std::cout << "  CPU result device: " << static_cast<void*>(vector.coo_result_ptr_d_) << std::endl;
         }
     }
     
@@ -605,8 +605,8 @@ void HBDIAPrinter<T>::printVectorMemoryLayout(const HBDIAVector<T>& vector) {
         if (vector.right_ptr_h_) {
             std::cout << "  Right buffer host: " << static_cast<void*>(vector.right_ptr_h_) << std::endl;
         }
-        if (vector.cpu_result_ptr_h_) {
-            std::cout << "  CPU result host: " << static_cast<void*>(vector.cpu_result_ptr_h_) << std::endl;
+        if (vector.coo_result_ptr_h_) {
+            std::cout << "  CPU result host: " << static_cast<void*>(vector.coo_result_ptr_h_) << std::endl;
         }
     }
 }
@@ -804,13 +804,13 @@ void HBDIAPrinter<T>::printVectorData(const HBDIAVector<T>& vector, size_t maxEl
         }
         
         // Show host CPU results if available
-        if (vector.cpu_result_ptr_h_) {
+        if (vector.coo_result_ptr_h_) {
             size_t resultPrintCount = std::min(maxElements, vector.getLocalSize());
             std::cout << "\n  Host CPU Results (" << vector.getLocalSize() << " elements):" << std::endl;
             std::cout << "    [";
             for (size_t i = 0; i < resultPrintCount; ++i) {
                 if (i > 0) std::cout << ", ";
-                std::cout << std::fixed << std::setprecision(6) << vector.cpu_result_ptr_h_[i];
+                std::cout << std::fixed << std::setprecision(6) << vector.coo_result_ptr_h_[i];
             }
             if (vector.getLocalSize() > maxElements) {
                 std::cout << ", ... (" << (vector.getLocalSize() - maxElements) << " more)";
