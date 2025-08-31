@@ -23,7 +23,7 @@ struct PartialMatrixMetadata {
 
 template <typename T>
 class HBDIA {
-    // Friend classes for access to private members
+    //friend classes for access to private members
     friend class HBDIAPrinter<T>;
     friend class HBDIAVector<T>;
     
@@ -39,9 +39,12 @@ class HBDIA {
               int rank = -1, int size = -1);
         ~HBDIA();
         
+        //format loading
         bool loadMTX(const std::string& filename);
         bool loadMTX(const std::string& filename, int numRows, int numCols);
+        void create3DStencil27Point(int nx, int ny, int nz, double noise = 0.0, int iteration = 0);
         
+        //format conversion
         void convertToDIAFormat(bool COOisUnique = false);
         bool isDIAFormat() const;
         bool isCOOFormat() const;
@@ -50,20 +53,13 @@ class HBDIA {
                                  int max_coo_entries = MAX_COO_ENTRIES, bool COOisUnique = false, 
                                  ExecutionMode execMode = ExecutionMode::GPU_COO);
         
-        // Convenience wrapper methods that delegate to HBDIAPrinter
+        //print wrappers
         void print() const;
         void printCOO() const;
         void printDIA(int block_width = 0) const;
         void printHBDIA() const;
         void printDense() const;
         void printDataRanges() const;
-        
-        // Static factory method for creating 3D stencil matrices
-        // Creates a 27-point stencil matrix for a 3D grid of size nx x ny x nz
-        // Each grid point connects to all 26 neighbors + itself in a 3x3x3 cube
-        // Uses realistic stencil weights: center=26, faces=-1, edges=-0.1, corners=-0.01
-        // noise parameter (0.0-1.0) adds random entries to non-stencil diagonals
-        void create3DStencil27Point(int nx, int ny, int nz, double noise = 0.0, int iteration = 0);
         
         // Format deletion methods
         void deleteCOOFormat();

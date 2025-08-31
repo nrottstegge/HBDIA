@@ -6,7 +6,7 @@
 #include "../include/DataExchange/BasicDistributor.hpp"
 #include "../include/DataExchange/BasicExtractor.hpp"
 #include "../include/DataExchange/MPICommunicator.hpp"
-#include "../include/Operations/HBDIASpMV.cuh"
+#include "../include/Operations/HBDIASpMV.hpp"
 
 #include <cusparse.h>
 #include <cuda_runtime.h>
@@ -267,6 +267,8 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
+
+// multi GPU
 
 // int main(int argc, char *argv[]) {
 //     auto hbdiaStart = std::chrono::high_resolution_clock::now();

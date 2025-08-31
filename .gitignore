@@ -3,7 +3,8 @@ build/
 */build/
 
 # Benchmarking data
-benchmarking/data/
+benchmarking/
+archive/
 
 # Common build artifacts
 *.o

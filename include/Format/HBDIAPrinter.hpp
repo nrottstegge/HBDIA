@@ -16,13 +16,10 @@ class HBDIA;
 template <typename T>
 class HBDIAVector;
 
-/**
- * @brief Printer utility class for HBDIA matrices
- * 
- * This class provides all printing functionality for HBDIA matrices,
- * including format-specific printing and dense visualization.
- * It's designed as a friend class to access private members of HBDIA.
- */
+//***
+//This is completely AI generated to have printing methods for debugging purposes
+//***
+
 template <typename T>
 class HBDIAPrinter {
 public:

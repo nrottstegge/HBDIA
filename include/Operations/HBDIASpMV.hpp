@@ -1,15 +1,10 @@
-#ifndef HBDIASPMV_CUH
-#define HBDIASPMV_CUH
+#ifndef HBDIASPMV_HPP
+#define HBDIASPMV_HPP
 
 #include <cuda_runtime.h>
 #include "../Format/HBDIA.hpp"
 #include "../Format/HBDIAVector.hpp"
 
-// Hybrid GPU+CPU HBDIA SpMV function
-// Processes HBDIA block-diagonal elements on GPU and COO fallback elements on CPU/GPU concurrently
-// Supports both single GPU and distributed (partial matrix) scenarios
-// Uses separate CPU accumulation buffer to avoid GPU memory contention
-// Note: Matrix must have streams initialized via matrix.initializeStreams() before calling
 template<typename T>
 bool hbdiaSpMV(HBDIA<T>& matrix, const HBDIAVector<T>& inputVector, HBDIAVector<T>& outputVector, 
                bool execCooCPU, bool execCooGPU);
@@ -48,4 +43,4 @@ void hbdia_cpu_coo_spmv_partial(
     const HBDIA<T>& matrix
 );
 
-#endif // HBDIASPMV_CUH
+#endif // HBDIASPMV_HPP

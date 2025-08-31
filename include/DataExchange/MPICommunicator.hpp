@@ -23,7 +23,6 @@ class MPICommunicator : public HBDIACommunicator<T> {
         bool receiveVectorPartition(VectorPartition<T>& vectorPartition, int senderRank);
         bool exchangeData(const HBDIA<T>& matrix, HBDIAVector<T>& vector) override;
         bool verifyDataExchange(const HBDIA<T>& matrix, const HBDIAVector<T>& vector) override;
-        // Gather vector data from all ranks to root. Only root fills globalVector.
         bool gatherVectorData(const HBDIAVector<T>& localVector, std::vector<T>& globalVector, int rootRank) override;
     
     private:

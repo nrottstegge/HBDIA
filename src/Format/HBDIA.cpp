@@ -235,7 +235,33 @@ bool HBDIA<T>::loadMTX(const std::string& filename) {
         std::cout << ", expanded to " << numNonZeros << " total entries";
     }
     std::cout << std::endl;
-    
+
+    //sort coo entries by row, column doesnt matter
+    std::vector<size_t> indices(numNonZeros);
+    for (size_t i = 0; i < numNonZeros; ++i) {
+        indices[i] = i;
+    }
+
+    std::sort(indices.begin(), indices.end(), [&](size_t a, size_t b) {
+        if (rowIndices[a] != rowIndices[b]) {
+            return rowIndices[a] < rowIndices[b];
+        }
+        return colIndices[a] < colIndices[b];
+    });
+
+    // Rearrange COO entries according to sorted indices
+    std::vector<T> sortedValues(numNonZeros);
+    std::vector<int> sortedRowIndices(numNonZeros);
+    std::vector<int> sortedColIndices(numNonZeros);
+    for (size_t i = 0; i < numNonZeros; ++i) {
+        sortedValues[i] = values[indices[i]];
+        sortedRowIndices[i] = rowIndices[indices[i]];
+        sortedColIndices[i] = colIndices[indices[i]];
+    }
+    values = std::move(sortedValues);
+    rowIndices = std::move(sortedRowIndices);
+    colIndices = std::move(sortedColIndices);
+
     return originalEntries > 0;
 }
 
@@ -406,7 +432,7 @@ void HBDIA<T>::convertToDIAFormat(bool COOisUnique) {
     
     // Step 1: Remove duplicates from COO format if not already unique
     if (!COOisUnique) {
-        //removeCOODuplicates();
+        removeCOODuplicates();
     }
     
     // Step 2: Find all unique diagonal offsets using global coordinates when available
@@ -1542,6 +1568,24 @@ void HBDIA<T>::create3DStencil27Point(int nx, int ny, int nz, double noise, int 
             }
         }
     }
+
+    //sort cpu entries by row but not by column
+    std::vector<size_t> perm(rowIndices.size());
+    std::iota(perm.begin(), perm.end(), 0);
+    std::sort(perm.begin(), perm.end(), [&](size_t a, size_t b) {
+        return rowIndices[a] < rowIndices[b];
+    });
+    std::vector<int> sortedRowIndices(rowIndices.size());
+    std::vector<int> sortedColIndices(colIndices.size());
+    std::vector<T> sortedValues(values.size());
+    for (size_t i = 0; i < perm.size(); i++) {
+        sortedRowIndices[i] = rowIndices[perm[i]];
+        sortedColIndices[i] = colIndices[perm[i]];
+        sortedValues[i] = values[perm[i]];
+    }
+    rowIndices = std::move(sortedRowIndices);
+    colIndices = std::move(sortedColIndices);
+    values = std::move(sortedValues);
     
     // Set matrix dimensions and metadata
     numRows = totalNodes;

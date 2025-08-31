@@ -6,6 +6,10 @@
 #include <iomanip>
 #include <cuda_runtime.h>
 
+//***
+//This is completely AI generated to have printing methods for debugging purposes
+//***
+
 template <typename T>
 void HBDIAPrinter<T>::print(const HBDIA<T>& matrix) {
     std::cout << "=========================================" << std::endl;

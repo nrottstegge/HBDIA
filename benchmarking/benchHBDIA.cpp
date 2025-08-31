@@ -1,5 +1,5 @@
 #include "benchHBDIA.hpp"
-#include "../include/Operations/HBDIASpMV.cuh"
+#include "../include/Operations/HBDIASpMV.hpp"
 #include "../include/types.hpp"
 #include <chrono>
 #include <iostream>
@@ -10,8 +10,9 @@ void benchHBDIA(HBDIA<DataType>& matrix,
                 const std::vector<DataType>& inputVector,
                 std::vector<DataType>& outputVector,
                 bool execCOOCPU, bool execCOOGPU,
-                std::vector<double>& measurements) {
-    
+                std::vector<double>& measurements,
+                bool unifiedMemory, bool unifiedMemory_malloc, bool unifiedMemory_managedMalloc, bool unifiedMemory_NumaAllocOnNode) {
+
     // Initialize cuSPARSE if needed
     if (execCOOGPU) {
         std::cout << "Initializing cuSPARSE for HBDIA SpMV..." << std::endl;
@@ -19,8 +20,8 @@ void benchHBDIA(HBDIA<DataType>& matrix,
     }
     
     // Create HBDIA vectors
-    HBDIAVector<DataType> hbdiaVecX(inputVector);
-    HBDIAVector<DataType> hbdiaVecY(std::vector<DataType>(matrix.getNumRows(), 0.0));
+    HBDIAVector<DataType> hbdiaVecX(inputVector, unifiedMemory, unifiedMemory_malloc, unifiedMemory_managedMalloc, unifiedMemory_NumaAllocOnNode);
+    HBDIAVector<DataType> hbdiaVecY(std::vector<DataType>(matrix.getNumRows(), 0.0), unifiedMemory, unifiedMemory_malloc, unifiedMemory_managedMalloc, unifiedMemory_NumaAllocOnNode);
     
     measurements.clear();
     measurements.reserve(NUM_BENCH_ITER);

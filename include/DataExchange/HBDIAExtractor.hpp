@@ -39,36 +39,30 @@ class HBDIAExtractor {
         HBDIAExtractor() = default;
         virtual ~HBDIAExtractor() = default;
 
-        // Create partitions for distribution (pure virtual)
         virtual bool createMatrixPartitions(
             const HBDIA<T>& matrix, 
             int numProcesses
         ) = 0;
         
-        // Create vector partitions for distribution (pure virtual)
         virtual bool createVectorPartitions(
             const std::vector<T>& globalVector,
             int numProcesses
         ) = 0;
         
-        // Partial matrix extraction methods - now works directly with matrix metadata
         virtual void extractPartialMatrixMetadata(
             HBDIA<T>& matrix,
             int numProcesses
         ) = 0;
         
-        // Print methods for debugging
+        // Print methods
         virtual void printProcessedDataRanges(const HBDIA<T>& matrix) = 0;
         
-        // Partitioning methods (pure virtual)
         virtual void setPartitioningStrategy(PartitioningStrategy strategy) = 0;
 
-        // Getters for accessing partitioned data
         virtual const std::vector<MatrixData>& getMatrixData() const = 0;
         virtual const std::vector<Partition<T>>& getPartitions() const = 0;
         virtual const std::vector<VectorPartition<T>>& getVectorPartitions() const = 0;
         
-        // Cleanup methods
         virtual void clearMatrixPartitions() = 0;
         virtual void clearVectorPartitions() = 0;
 

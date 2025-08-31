@@ -5,7 +5,7 @@
 #include "../include/DataExchange/BasicDistributor.hpp"
 #include "../include/DataExchange/BasicExtractor.hpp"
 #include "../include/DataExchange/MPICommunicator.hpp"
-#include "../include/Operations/HBDIASpMV.cuh"
+#include "../include/Operations/HBDIASpMV.hpp"
 
 #include <iostream>
 #include <chrono>

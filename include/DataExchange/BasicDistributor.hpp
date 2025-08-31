@@ -31,7 +31,6 @@ public:
         std::vector<T>& vector
     ) override;
     
-    // Gather vector from all ranks to root. Fills globalVector on root, leaves it empty on others.
     bool gatherVector(const HBDIAVector<T>& localVector, std::vector<T>& globalVector);
     
     bool exchangeData(

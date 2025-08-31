@@ -29,10 +29,11 @@ public:
     // Constructors
     HBDIAVector();
     HBDIAVector(const std::vector<T>& localData);
+    HBDIAVector(const std::vector<T>& localData, bool unifiedMemory, bool unifiedMemoryMalloc, bool unifiedMemoryManagedMalloc, bool unifiedNumaAllocOnNode);
     HBDIAVector(const std::vector<T>& localData, const HBDIA<T>& matrix, int rank, int size);
     ~HBDIAVector();
 
-    // Local vector data access (deprecated after unified memory setup)
+    // Local vector data access
     const std::vector<T>& getLocalVector() const { return localVector_; }
     void setLocalVector(const std::vector<T>& data) { localVector_ = data; }
     
@@ -58,7 +59,13 @@ public:
     
     // Setup managed memory (called automatically in constructor with matrix)
     void setupManagedMemory(int leftBufferSize, int rightBufferSize);
-    
+
+    // memory configuration
+    bool isUnifiedMemory() const { return unifiedMemory_; }
+    bool isUnifiedMemoryMalloc() const { return unifiedMemoryMalloc_; }
+    bool isUnifiedMemoryManagedMalloc() const { return unifiedMemoryManagedMalloc_; }
+    bool isUnifiedNumaAllocOnNode() const { return unifiedNumaAllocOnNode_; }
+
     // Print vector debug information
     void print(const std::string& vectorName = "HBDIAVector") const;
 
@@ -69,6 +76,12 @@ private:
     size_t size_recv_left_ = 0;
     size_t size_recv_right_ = 0;
     size_t size_local_ = 0;
+
+    // memory configuration
+    bool unifiedMemory_ = false;                   // Use unified memory
+    bool unifiedMemoryMalloc_ = false;             // Use malloc for unified memory
+    bool unifiedMemoryManagedMalloc_ = false;      // Use managed malloc for unified memory
+    bool unifiedNumaAllocOnNode_ = false;       // Use malloc on node for unified memory
     
     // Managed memory accessible by both GPU and CPU
     T* unified_data_ptr_ = nullptr; // Points to managed memory: [left|local|right]

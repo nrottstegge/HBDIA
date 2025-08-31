@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <cstdlib>
+#include <omp.h>
 
 using DataType = double;
 
@@ -79,6 +80,34 @@ void saveMeasurementData(const std::string& folderPath, const std::string& algor
     saveCSV(folderPath + "/" + algorithmName + "_measurements.csv", headers, data);
 }
 
+void saveMeasurementDataWithConfig(const std::string& folderPath, const std::string& algorithmName,
+                                  const std::vector<double>& measurements, 
+                                  bool execCOOCPU, bool execCOOGPU, bool unifiedMemory,
+                                  bool unifiedMemory_malloc, bool unifiedMemory_managedMalloc, 
+                                  bool unifiedMemory_NumaAllocOnNode) {
+    if (measurements.empty()) return;
+    
+    std::vector<std::string> headers = {"iteration", "time_ms", "execCOOCPU", "execCOOGPU", 
+                                       "unifiedMemory", "unifiedMemory_malloc", 
+                                       "unifiedMemory_managedMalloc", "unifiedMemory_NumaAllocOnNode"};
+    std::vector<std::vector<std::string>> data;
+    
+    for (size_t i = 0; i < measurements.size(); i++) {
+        data.push_back({
+            std::to_string(i),
+            std::to_string(measurements[i]),
+            execCOOCPU ? "1" : "0",
+            execCOOGPU ? "1" : "0", 
+            unifiedMemory ? "1" : "0",
+            unifiedMemory_malloc ? "1" : "0",
+            unifiedMemory_managedMalloc ? "1" : "0",
+            unifiedMemory_NumaAllocOnNode ? "1" : "0"
+        });
+    }
+    
+    saveCSV(folderPath + "/" + algorithmName + "_measurements.csv", headers, data);
+}
+
 void printStats(const std::string& name, const std::vector<double>& measurements) {
     if (measurements.empty()) return;
     
@@ -100,7 +129,10 @@ void printStats(const std::string& name, const std::vector<double>& measurements
 }
 
 void printMatrixInfo(const HBDIA<DataType>& matrix, const std::string& name, double noise,
-                     int nx, int ny, int nz, const std::string& timestamp) {
+                     int nx, int ny, int nz, const std::string& timestamp,
+                     bool execCOOCPU, bool execCOOGPU, bool unifiedMemory,
+                     bool unifiedMemory_malloc, bool unifiedMemory_managedMalloc, 
+                     bool unifiedMemory_NumaAllocOnNode) {
     std::cout << "=== Matrix Information ===" << std::endl;
     std::cout << "Name: " << name << std::endl;
     std::cout << "Rows: " << matrix.getNumRows() << std::endl;
@@ -198,9 +230,17 @@ void printMatrixInfo(const HBDIA<DataType>& matrix, const std::string& name, dou
         std::cout << "CSR:   " << std::fixed << std::setprecision(2) << (double)csrCost / cooCost << "x" << std::endl;
         
         // Create data directory and save matrix info as CSV
-        std::string folderName = "/users/nrottste/HBDIA/benchmarking/data/" + name + "_" + std::to_string(nx) + "_" + 
-                                std::to_string(ny) + "_" + std::to_string(nz) + "_" + 
-                                std::to_string(noise) + "_" + timestamp;
+        std::string folderName;
+        if (name == "3D27Stencil") {
+            // Traditional 3D stencil naming
+            folderName = "/users/nrottstegge/github/HBDIA/benchmarking/data/" + name + "_" + std::to_string(nx) + "_" + 
+                        std::to_string(ny) + "_" + std::to_string(nz) + "_" + 
+                        std::to_string(noise) + "_" + timestamp;
+        } else {
+            // MTX file naming (just use matrix name)
+            folderName = "/users/nrottstegge/github/HBDIA/benchmarking/data/" + name + "_" + 
+                        std::to_string(noise) + "_" + timestamp;
+        }
         createDirectories(folderName);
         
         // Prepare matrix info data for CSV
@@ -208,7 +248,9 @@ void printMatrixInfo(const HBDIA<DataType>& matrix, const std::string& name, dou
             "name", "nx", "ny", "nz", "noise", "rows", "cols", "nnz", "num_diagonals",
             "num_blocks", "block_width", "threshold", "max_coo_entries", "coo_fallback_entries",
             "hbdia_data_size", "hbdia_cost_bytes", "coo_cost_bytes", "dia_cost_bytes", 
-            "sell_cost_bytes", "csr_cost_bytes", "hbdia_vs_coo", "dia_vs_coo", "csr_vs_coo", "sell_vs_coo"
+            "sell_cost_bytes", "csr_cost_bytes", "hbdia_vs_coo", "dia_vs_coo", "csr_vs_coo", "sell_vs_coo",
+            "execCOOCPU", "execCOOGPU", "unifiedMemory", "unifiedMemory_malloc", 
+            "unifiedMemory_managedMalloc", "unifiedMemory_NumaAllocOnNode"
         };
         
         std::vector<std::vector<std::string>> matrixData = {{
@@ -235,7 +277,13 @@ void printMatrixInfo(const HBDIA<DataType>& matrix, const std::string& name, dou
             std::to_string((double)hbdiaCost / cooCost),
             std::to_string((double)diaCost / cooCost),
             std::to_string((double)csrCost / cooCost),
-            std::to_string((double)sellCost / cooCost)
+            std::to_string((double)sellCost / cooCost),
+            execCOOCPU ? "1" : "0",
+            execCOOGPU ? "1" : "0",
+            unifiedMemory ? "1" : "0",
+            unifiedMemory_malloc ? "1" : "0",
+            unifiedMemory_managedMalloc ? "1" : "0",
+            unifiedMemory_NumaAllocOnNode ? "1" : "0"
         }};
         
         saveCSV(folderName + "/matrix_info.csv", matrixHeaders, matrixData);
@@ -278,7 +326,7 @@ int main(int argc, char* argv[]) {
     bool unifiedMemory = false;
     bool unifiedMemory_malloc = false;
     bool unifiedMemory_managedMalloc = false;
-    bool unifiedMemory_mallocOnNode = false;
+    bool unifiedMemory_NumaAllocOnNode = false;
     
     // Parse execution flags (optional arguments 7-13)
     if (argc >= 7) execCOOCPU = (std::atoi(argv[6]) != 0);
@@ -286,7 +334,7 @@ int main(int argc, char* argv[]) {
     if (argc >= 9) unifiedMemory = (std::atoi(argv[8]) != 0);
     if (argc >= 10) unifiedMemory_malloc = (std::atoi(argv[9]) != 0);
     if (argc >= 11) unifiedMemory_managedMalloc = (std::atoi(argv[10]) != 0);
-    if (argc >= 12) unifiedMemory_mallocOnNode = (std::atoi(argv[11]) != 0);
+    if (argc >= 12) unifiedMemory_NumaAllocOnNode = (std::atoi(argv[11]) != 0);
     
     // Other configuration
     int block_width = 32;
@@ -295,28 +343,66 @@ int main(int argc, char* argv[]) {
     int iteration = 0;
     if (argc >= 14) iteration = std::atoi(argv[13]);
     
+    // Optional filename argument
+    std::string filename = "";
+    if (argc >= 15) filename = argv[14];
+    
     // Print usage if incorrect number of arguments
-    if (argc > 14) {
-        std::cout << "Usage: " << argv[0] << " [nx] [ny] [nz] [threshold] [noise] [execCOOCPU] [execCOOGPU] [unifiedMemory] [unifiedMemory_malloc] [unifiedMemory_managedMalloc] [unifiedMemory_mallocOnNode] [max_coo_entries] [seed]" << std::endl;
+    if (argc > 15) {
+        std::cout << "Usage: " << argv[0] << " [nx] [ny] [nz] [threshold] [noise] [execCOOCPU] [execCOOGPU] [unifiedMemory] [unifiedMemory_malloc] [unifiedMemory_managedMalloc] [unifiedMemory_mallocOnNode] [max_coo_entries] [iteration] [filename]" << std::endl;
         std::cout << "Defaults: nx=32, ny=32, nz=32, threshold=16, noise=0.1, max_coo_entries=INT_MAX, iteration=0" << std::endl;
         std::cout << "Execution flags: execCOOCPU=0, execCOOGPU=1, others=0 (0=false, 1=true)" << std::endl;
+        std::cout << "If filename is provided, matrix will be loaded from MTX file instead of creating 3D stencil" << std::endl;
         return 1;
     }
 
     // Generate timestamp for this run
     std::string timestamp = generateTimestamp();
     
+    // Determine matrix name based on whether filename is provided
+    std::string matrixName;
+    bool useMatrixFile = !filename.empty();
+    
+    if (useMatrixFile) {
+        matrixName = std::filesystem::path(filename).stem().string();
+    } else {
+        matrixName = "3D27Stencil";
+    }
+    
     std::cout << "=== HBDIA vs cuSPARSE Benchmark ===" << std::endl;
     std::cout << "Configuration:" << std::endl;
-    std::cout << "  Matrix: " << nx << "x" << ny << "x" << nz << " 27-point stencil" << std::endl;
+    if (useMatrixFile) {
+        std::cout << "  Matrix file: " << filename << std::endl;
+        std::cout << "  Matrix name: " << matrixName << std::endl;
+    } else {
+        std::cout << "  Matrix: " << nx << "x" << ny << "x" << nz << " 27-point stencil" << std::endl;
+    }
     std::cout << "  Noise: " << noise << std::endl;
     std::cout << "  Threshold: " << threshold << std::endl;
     std::cout << "  Block Width: " << block_width << std::endl;
-    std::cout << "  Timestamp: " << timestamp << std::endl << std::endl;
+    std::cout << "  Timestamp: " << timestamp << std::endl;
+    std::cout << "Execution Configuration:" << std::endl;
+    std::cout << "  execCOOCPU: " << (execCOOCPU ? "true" : "false") << std::endl;
+    std::cout << "  execCOOGPU: " << (execCOOGPU ? "true" : "false") << std::endl;
+    std::cout << "  unifiedMemory: " << (unifiedMemory ? "true" : "false") << std::endl;
+    std::cout << "  unifiedMemory_malloc: " << (unifiedMemory_malloc ? "true" : "false") << std::endl;
+    std::cout << "  unifiedMemory_managedMalloc: " << (unifiedMemory_managedMalloc ? "true" : "false") << std::endl;
+    std::cout << "  unifiedMemory_NumaAllocOnNode: " << (unifiedMemory_NumaAllocOnNode ? "true" : "false") << std::endl;
+    std::cout << std::endl;
     
     // Create matrix
     HBDIA<DataType> matrix;
-    matrix.create3DStencil27Point(nx, ny, nz, noise, iteration);
+    if (useMatrixFile) {
+        try {
+            matrix.loadMTX(filename);
+            std::cout << "Successfully loaded matrix from: " << filename << std::endl;
+        } catch (const std::exception& e) {
+            std::cerr << "Error loading matrix from " << filename << ": " << e.what() << std::endl;
+            return 1;
+        }
+    } else {
+        matrix.create3DStencil27Point(nx, ny, nz, noise, iteration);
+    }
     
     // Determine execution mode based on flags
     ExecutionMode execMode = execCOOGPU ? ExecutionMode::GPU_COO : ExecutionMode::CPU_COO;
@@ -332,7 +418,10 @@ int main(int argc, char* argv[]) {
     std::cout << "Non-zeros: " << matrix.getNumNonZeros() << std::endl << std::endl;
     
     // Print detailed matrix information and save to CSV
-    printMatrixInfo(matrix, "3D27Stencil", noise, nx, ny, nz, timestamp);
+    printMatrixInfo(matrix, matrixName, noise, nx, ny, nz, timestamp,
+                   execCOOCPU, execCOOGPU, unifiedMemory, 
+                   unifiedMemory_malloc, unifiedMemory_managedMalloc, 
+                   unifiedMemory_NumaAllocOnNode);
     
     // Benchmark cuSPARSE
     std::vector<DataType> cusparseResult;
@@ -348,7 +437,8 @@ int main(int argc, char* argv[]) {
     std::vector<double> hbdiaMeasurements;
     
     std::cout << "Running HBDIA benchmark..." << std::endl;
-    benchHBDIA(matrix, inputVector, hbdiaResult, execCOOCPU, execCOOGPU, hbdiaMeasurements);
+    benchHBDIA(matrix, inputVector, hbdiaResult, execCOOCPU, execCOOGPU, hbdiaMeasurements, 
+               unifiedMemory, unifiedMemory_malloc, unifiedMemory_managedMalloc, unifiedMemory_NumaAllocOnNode);
     
     // Print results
     std::cout << std::endl;
@@ -356,30 +446,55 @@ int main(int argc, char* argv[]) {
     std::cout << std::endl;
     printStats("HBDIA", hbdiaMeasurements);
     
-    // Save measurement data to CSV
-    std::string folderName = "/users/nrottste/HBDIA/benchmarking/data/3D27Stencil_" + std::to_string(nx) + "_" + 
-                            std::to_string(ny) + "_" + std::to_string(nz) + "_" + 
-                            std::to_string(noise) + "_" + timestamp;
-    saveMeasurementData(folderName, "cusparse", cusparseMeasurements);
-    saveMeasurementData(folderName, "hbdia", hbdiaMeasurements);
-    
-    // Performance comparison
-    if (!cusparseMeasurements.empty() && !hbdiaMeasurements.empty()) {
-        double cusparseMean = std::accumulate(cusparseMeasurements.begin() + 1, cusparseMeasurements.end(), 0.0) / cusparseMeasurements.size();
-        double hbdiaMean = std::accumulate(hbdiaMeasurements.begin() + 1, hbdiaMeasurements.end(), 0.0) / hbdiaMeasurements.size();
-        
-        std::cout << std::endl << "=== Performance Comparison ===" << std::endl;
-        std::cout << "Speedup: " << cusparseMean / hbdiaMean << "x" << std::endl;
-    }
-    
     // Accuracy check
+    int error_count = 0;
+    bool accuracyPassed = false;
     if (cusparseResult.size() == hbdiaResult.size()) {
         DataType maxError = 0.0;
         for (size_t i = 0; i < cusparseResult.size(); i++) {
             maxError = std::max(maxError, std::abs(cusparseResult[i] - hbdiaResult[i]));
+            if(std::abs(cusparseResult[i] - hbdiaResult[i]) > 1e-6) error_count++;
+            if(std::abs(cusparseResult[i] - hbdiaResult[i]) > 1e-6 && error_count < 10) {
+                std::cout << "Mismatch at index " << i << ": cuSPARSE=" << cusparseResult[i] 
+                          << ", HBDIA=" << hbdiaResult[i] << std::endl;
+            }
         }
         std::cout << "Max error: " << maxError << std::endl;
-        std::cout << (maxError < 1e-6 ? "✅ ACCURACY PASSED" : "❌ ACCURACY FAILED") << std::endl;
+        std::cout << "Total mismatches: " << error_count << " of " << cusparseResult.size() << std::endl;
+        accuracyPassed = (maxError < 1e-6);
+        std::cout << (accuracyPassed ? "✅ ACCURACY PASSED" : "❌ ACCURACY FAILED") << std::endl;
+    }
+    
+    // Only save measurement data if accuracy check passed
+    if (accuracyPassed) {
+        std::string folderName;
+        if (useMatrixFile) {
+            folderName = "/users/nrottstegge/github/HBDIA/benchmarking/data/" + matrixName + "_" + 
+                        std::to_string(noise) + "_" + timestamp;
+        } else {
+            folderName = "/users/nrottstegge/github/HBDIA/benchmarking/data/3D27Stencil_" + std::to_string(nx) + "_" + 
+                        std::to_string(ny) + "_" + std::to_string(nz) + "_" + 
+                        std::to_string(noise) + "_" + timestamp;
+        }
+        saveMeasurementData(folderName, "cusparse", cusparseMeasurements);
+        saveMeasurementDataWithConfig(folderName, "hbdia", hbdiaMeasurements, 
+                                     execCOOCPU, execCOOGPU, unifiedMemory, 
+                                     unifiedMemory_malloc, unifiedMemory_managedMalloc, 
+                                     unifiedMemory_NumaAllocOnNode);
+        std::cout << "\n📊 Measurement data saved successfully." << std::endl;
+    } else {
+        std::cout << "\n⚠️  Measurement data NOT saved due to accuracy failure." << std::endl;
+    }
+    
+    // Performance comparison (only if accuracy passed)
+    if (accuracyPassed && !cusparseMeasurements.empty() && !hbdiaMeasurements.empty()) {
+        double cusparseMean = std::accumulate(cusparseMeasurements.begin() + 1, cusparseMeasurements.end(), 0.0) / cusparseMeasurements.size();
+        double hbdiaMean = std::accumulate(hbdiaMeasurements.begin() + 1, hbdiaMeasurements.end(), 0.0) / hbdiaMeasurements.size();
+        
+        std::cout << std::endl << "=== Performance Comparison ===" << std::endl;
+        std::cout << "cuSPARSE Mean: " << cusparseMean << " ms" << std::endl;
+        std::cout << "HBDIA Mean: " << hbdiaMean << " ms" << std::endl;
+        std::cout << "Speedup: " << cusparseMean / hbdiaMean << "x" << std::endl;
     }
     
     return 0;

@@ -1,15 +1,15 @@
-# HBDIA: Heterogenous Blocked Diagonal Sparse Matrix Library
+# HBDIA: Hybrid Blocked-DIA Sparse Matrix Library
 
-A high-performance sparse matrix library that combines GPU acceleration with CPU fallback for  sparse matrix-vector multiplication (SpMV) on heterogenous architectures.
+A high-performance sparse matrix library for GPU-accelerated sparse matrix-vector multiplication (SpMV) with multi-GPU support.
 
 ## What is HBDIA Format?
 
-HBDIA (Hybrid Block-Diagonal) format is a sparse matrix storage scheme that:
-- **Organizes matrix into fixed-width blocks** for GPU-friendly memory access patterns
-- **Stores frequent diagonal patterns efficiently** using block-diagonal storage
-- **Falls back to COO format** for irregular/sparse patterns that don't fit the block structure
+HBDIA (Hybrid Blocked-DIA) format is a sparse matrix storage scheme that:
+- **Organizes matrix into fixed-width blocks** for GPU-friendly memory access patterns  
+- **Falls back to COO format** for irregular/sparse patterns (can execute on CPU with unified memory)
+- **Supports multi-GPU** distributed execution via MPI
 
-### Visual Example
+### Visual Example (dwt_59 from SuiteSparse Collection*)
 
 **Original Dense Matrix (20×20):**
 ```
@@ -80,83 +80,41 @@ Row     Col     Value
 15      17      0.800000
 ```
 
-## Quick Start
+*Timothy A. Davis and Yifan Hu. 2011. The University of Florida Sparse Matrix Collection. ACM Transactions on Mathematical Software 38, 1, Article 1 (December 2011), 25 pages. DOI: https://doi.org/10.1145/2049662.2049663
 
-### Basic Usage
+## Example Usage
+
+See `simple_hbdia_example.cpp` for complete single-GPU and multi-GPU examples.
 
 ```cpp
-#include "Format/HBDIA.hpp"
-#include "Operations/HBDIASpMV.cuh"
-
-// 1. Load matrix from file
+// Single GPU example
 HBDIA<double> matrix;
-matrix.loadMTX("matrix.mtx");
-matrix.convertToHBDIA();
+matrix.create3DStencil27Point(8, 8, 8, 0.0);
+matrix.convertToHBDIAFormat(32, 2);
 
-// 2. Create vectors
-std::vector<double> input(matrix.getNumRows(), 1.0);
-HBDIAVector<double> inputVec(input);
-HBDIAVector<double> outputVec(std::vector<double>(matrix.getNumRows(), 0.0));
-
-// 3. Perform SpMV
-bool success = hbdiaSpMV(matrix, inputVec, outputVec);
-```
-
-### Distributed Multi-GPU Usage
-
-```cpp
-#include "DataExchange/BasicDistributor.hpp"
-#include "DataExchange/MPICommunicator.hpp"
-
-// 1. Initialize MPI and create distributor
-auto communicator = std::make_unique<MPICommunicator<double>>();
-communicator->initialize(argc, argv);
-
-auto extractor = std::make_unique<BasicExtractor<double>>();
-BasicDistributor<double> distributor(std::move(communicator), std::move(extractor), 0);
-
-// 2. Load and distribute matrix (on root process)
-HBDIA<double> globalMatrix, localMatrix;
-if (distributor.getRank() == 0) {
-    globalMatrix.loadMTX("large_matrix.mtx");
-    globalMatrix.convertToHBDIAFormat();
-    distributor.scatterMatrix(globalMatrix, localMatrix);
-} else {
-    distributor.receiveMatrix(localMatrix);
+std::vector<double> inputData(matrix.getNumRows());
+for (int i = 0; i < matrix.getNumRows(); i++) {
+    inputData[i] = static_cast<double>(i + 1);
 }
 
-// 3. Create and distribute vector
-std::vector<double> localVector;
-if (distributor.getRank() == 0) {
-    std::vector<double> globalVector(globalMatrix.getNumRows());
-    // Initialize global vector...
-    distributor.scatterVector(globalVector, localVector);
-} else {
-    distributor.receiveVector(localVector);
-}
+HBDIAVector<double> vecX(inputData);
+HBDIAVector<double> vecY(std::vector<double>(matrix.getNumRows(), 0.0));
 
-// 4. Create distributed vector with communication buffers
-HBDIAVector<double> hbdiaVector(localVector, localMatrix, 
-                               distributor.getRank(), distributor.getSize());
+bool execCOOCPU = true;
+bool execCOOGPU = false;
 
-// 5. Exchange boundary data
-distributor.exchangeData(localMatrix, hbdiaVector);
-
-// 6. Perform distributed SpMV
-HBDIAVector<double> outputVector(std::vector<double>(localMatrix.getNumRows(), 0.0));
-bool success = hbdiaSpMV(localMatrix, hbdiaVector, outputVector);
-
-// 7. Gather results
-std::vector<double> globalResult;
-distributor.gatherVector(outputVector, globalResult);
+hbdiaSpMV(matrix, vecX, vecY, execCOOCPU, execCOOGPU);
 ```
 
-## Build Instructions
+## Build Requirements
 
+Load required modules:
 ```bash
-# Clone and build
-git clone <repository-url>
-cd HBDIA
+module load cmake/3.30.5 gcc/13.3.0 cuda/12.6.2 cray-mpich/8.1.30 nccl/2.22.3-1
+```
+
+Build:
+```bash
 mkdir build && cd build
 cmake ..
 make -j

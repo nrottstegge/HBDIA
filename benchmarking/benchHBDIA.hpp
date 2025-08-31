@@ -13,6 +13,7 @@ void benchHBDIA(HBDIA<DataType>& matrix,
                 const std::vector<DataType>& inputVector,
                 std::vector<DataType>& outputVector,
                 bool execCOOCPU, bool execCOOGPU,
-                std::vector<double>& measurements);
+                std::vector<double>& measurements,
+                bool unifiedMemory, bool unifiedMemory_malloc, bool unifiedMemory_managedMalloc, bool unifiedMemory_NumaAllocOnNode);
 
 #endif // BENCH_HBDIA_HPP
